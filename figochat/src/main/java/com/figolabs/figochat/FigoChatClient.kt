@@ -1,0 +1,182 @@
+package com.figolabs.figochat
+
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import org.json.JSONArray
+import org.json.JSONException
+import org.json.JSONObject
+import java.io.File
+import java.io.IOException
+import java.io.InterruptedIOException
+import java.util.Base64
+import java.util.concurrent.TimeUnit
+
+/**
+ * Thin client over the Figo AI public REST APIs:
+ *  - POST /api/v1/chat/assistant/{assistantId}   chat with the assistant
+ *  - POST /api/v1/stt                            speech to text (multipart, field `audio`)
+ *  - POST /api/v1/cdn/upload/ocr/{assistantId}   upload files to the CDN (images are OCR'd)
+ *  - GET  /api/v1/realtime/config                public Pusher settings for live agent messages
+ */
+class FigoChatClient internal constructor(private val config: FigoChatConfig) {
+
+    private val http = OkHttpClient.Builder()
+        .callTimeout(config.timeoutMillis, TimeUnit.MILLISECONDS)
+        .readTimeout(config.timeoutMillis, TimeUnit.MILLISECONDS)
+        .build()
+
+    /** Thread id of the current conversation, once the first reply has arrived. */
+    @Volatile
+    var threadId: String? = config.threadId
+        private set
+
+    /** "ai" or "liveagent". */
+    @Volatile
+    var threadMode: String? = null
+        private set
+
+    /** Forget the current thread so the next message starts a new conversation. */
+    fun resetThread() {
+        threadId = null
+        threadMode = null
+    }
+
+    /**
+     * Sends a message. CDN urls of uploaded files are appended to the question so the assistant can read
+     * them (the API adds the OCR text of uploaded images).
+     */
+    suspend fun sendMessage(text: String, attachmentUrls: List<String> = emptyList()): FigoChatReply = withContext(Dispatchers.IO) {
+        val question = (listOf(text.trim()) + attachmentUrls).filter { it.isNotEmpty() }.joinToString("\n")
+        if (question.isEmpty()) throw FigoChatException("Message is empty.", "EMPTY")
+
+        val body = JSONObject()
+            .put("question", question)
+            .put("fullName", config.fullName)
+            .put("emailAddress", config.emailAddress)
+            .put("phoneNumber", config.mobilePhone)
+        threadId?.let { body.put("threadId", it) }
+
+        val request = request(url("api", "v1", "chat", "assistant", config.assistantId))
+            .post(body.toString().toRequestBody(JSON))
+            .build()
+
+        execute(request) { res ->
+            val json = parse(res)
+            res.header(HEADER_THREAD_ID)?.takeIf { it.isNotEmpty() }?.let { threadId = it }
+            res.header(HEADER_THREAD_MODE)?.takeIf { it.isNotEmpty() }?.let { threadMode = it }
+            FigoChatReply(json.optString("responseData", ""), threadId, threadMode)
+        }
+    }
+
+    /** Transcribes a recorded audio file (AAC in an .m4a container) to text. */
+    suspend fun transcribe(audio: File, mimeType: String = "audio/mp4"): String = withContext(Dispatchers.IO) {
+        val form = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("audio", audio.name, audio.asRequestBody(mimeType.toMediaType()))
+            .build()
+        val url = url("api", "v1", "stt").newBuilder().addQueryParameter("mimetype", mimeType).build()
+
+        execute(request(url).post(form).build()) { res -> parse(res).optString("responseData", "").trim() }
+    }
+
+    /**
+     * Uploads files to the CDN and returns one url per file, in order. Images are OCR'd by the API, so
+     * sending their urls in a chat message lets the assistant read them.
+     */
+    suspend fun uploadFiles(files: List<FigoUploadFile>): List<String> = withContext(Dispatchers.IO) {
+        if (files.isEmpty()) return@withContext emptyList()
+        val payload = JSONArray()
+        files.forEach { payload.put(JSONObject().put("extension", it.extension).put("base64String", Base64.getEncoder().encodeToString(it.bytes))) }
+
+        val request = request(url("api", "v1", "cdn", "upload", "ocr", config.assistantId))
+            .post(payload.toString().toRequestBody(JSON))
+            .build()
+
+        execute(request) { res ->
+            // a partial failure still returns the urls that did upload, with null in the failed slots
+            val json = parse(res, allowFailureCode = true)
+            val data = json.optJSONArray("responseData")
+            val urls = (0 until (data?.length() ?: 0)).map { data!!.optString(it, "").takeUnless { u -> u == "null" } ?: "" }
+            if (urls.isEmpty() || urls.any { it.isEmpty() }) {
+                throw FigoChatException(json.optString("responseMessage", "Upload failed."), json.optString("responseCode", "UPLOAD"))
+            }
+            urls
+        }
+    }
+
+    /** Public Pusher settings used to subscribe to the thread channel for live agent messages. */
+    suspend fun getRealtimeConfig(): FigoRealtimeConfig = withContext(Dispatchers.IO) {
+        execute(request(url("api", "v1", "realtime", "config")).get().build()) { res ->
+            val data = parse(res).optJSONObject("responseData")
+            val key = data?.optString("key").orEmpty()
+            val cluster = data?.optString("cluster").orEmpty()
+            if (key.isEmpty() || cluster.isEmpty()) throw FigoChatException("Realtime is not configured on the server.", "REALTIME")
+            FigoRealtimeConfig(
+                key = key,
+                cluster = cluster,
+                eventName = data?.optString("eventName").orEmpty().ifEmpty { "figoai" },
+                provider = data?.optString("provider").orEmpty().ifEmpty { "pusher" },
+            )
+        }
+    }
+
+    /** Builds base url + path segments; each segment is percent-encoded. */
+    private fun url(vararg segments: String): HttpUrl =
+        config.baseUrl.trimEnd('/').toHttpUrl().newBuilder().apply { segments.forEach { addPathSegment(it) } }.build()
+
+    private fun request(url: HttpUrl) = Request.Builder()
+        .url(url)
+        .header("Accept", "application/json")
+        .header("Authorization", "Bearer ${config.apiKey}")
+
+    private inline fun <T> execute(request: Request, handle: (Response) -> T): T {
+        val response = try {
+            http.newCall(request).execute()
+        } catch (e: InterruptedIOException) {
+            throw FigoChatException("The request timed out. Please try again.", "TIMEOUT", e)
+        } catch (e: IOException) {
+            throw FigoChatException("Network error. Check your connection and try again.", "NETWORK", e)
+        }
+        return response.use(handle)
+    }
+
+    private fun parse(res: Response, allowFailureCode: Boolean = false): JSONObject {
+        val raw = res.body?.string().orEmpty()
+        if (!res.isSuccessful) {
+            // ApiAccessKeyAuthorize returns a plain string such as "Invalid api-key was passed"
+            val text = raw.trim().removeSurrounding("\"")
+            val message = if (res.code == 401) "Unauthorized: ${text.ifEmpty { "check your API key." }}"
+            else text.ifEmpty { "Request failed (${res.code})." }
+            throw FigoChatException(message, res.code.toString())
+        }
+
+        val json = try {
+            JSONObject(raw)
+        } catch (e: JSONException) {
+            throw FigoChatException("Unexpected response from the server.", "PARSE", e)
+        }
+
+        val code = json.optString("responseCode")
+        val message = json.optString("responseMessage")
+        if (code == CODE_LIMIT_REACHED) throw FigoChatException(message.ifEmpty { "Usage limit reached." }, code)
+        if (code != CODE_SUCCESS && !allowFailureCode) throw FigoChatException(message.ifEmpty { "Something went wrong." }, code.ifEmpty { "UNKNOWN" })
+        return json
+    }
+
+    private companion object {
+        val JSON = "application/json; charset=utf-8".toMediaType()
+        const val CODE_SUCCESS = "00"
+        const val CODE_LIMIT_REACHED = "49"
+        const val HEADER_THREAD_ID = "X-Thread-Id"
+        const val HEADER_THREAD_MODE = "X-Thread-Mode"
+    }
+}
