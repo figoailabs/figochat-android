@@ -84,6 +84,7 @@ import com.figolabs.figochat.FigoChatMessage
 import com.figolabs.figochat.FigoMessageRole
 import com.figolabs.figochat.FigoMessageStatus
 import com.figolabs.figochat.htmlToRuns
+import com.figolabs.figochat.htmlToText
 import com.figolabs.figochat.plainToRuns
 import kotlinx.coroutines.delay
 
@@ -144,7 +145,7 @@ fun FigoChatScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    FigoChat.config.title,
+                    vm.title,
                     color = onPrimary,
                     fontSize = 17.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -157,7 +158,7 @@ fun FigoChatScreen(
             }
         }
 
-        val items = vm.messages.asReversed()
+        val items = vm.displayMessages.asReversed()
         LazyColumn(
             Modifier.weight(1f).fillMaxWidth(),
             reverseLayout = true,
@@ -166,7 +167,7 @@ fun FigoChatScreen(
             // and overrides reverseLayout
             verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.Bottom),
         ) {
-            if (vm.waiting) item(key = "typing") { TypingBubble() }
+            if (vm.waiting) item(key = "typing") { WaitingBubble(vm.waitingMessage) }
             items(items, key = { it.id }) { m -> MessageBubble(m, primary, onPrimary) { vm.retry(m) } }
         }
 
@@ -375,8 +376,9 @@ private fun AttachmentView(attachment: FigoAttachment, color: Color) {
     }
 }
 
+/** Shown on the left while a reply is on its way: the assistant's waiting message (HTML) with animated dots, or the dots alone. */
 @Composable
-private fun TypingBubble() {
+private fun WaitingBubble(waitingMessage: String?) {
     var dots by remember { mutableIntStateOf(1) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -384,16 +386,26 @@ private fun TypingBubble() {
             dots = dots % 3 + 1
         }
     }
+    val text = remember(waitingMessage) { waitingMessage?.let(::htmlToText)?.trim()?.takeIf { it.isNotEmpty() } }
+    val maxWidth = (LocalConfiguration.current.screenWidthDp * 0.8f).dp
     Box(Modifier.fillMaxWidth()) {
-        Text(
-            "•".repeat(dots),
-            color = TextMuted,
-            fontSize = 15.sp,
-            modifier = Modifier
-                .background(BubbleGrey, RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomEnd = 18.dp, bottomStart = 4.dp))
-                .padding(horizontal = 14.dp, vertical = 10.dp)
-                .widthIn(min = 24.dp),
-        )
+        val bubble = Modifier
+            .widthIn(max = maxWidth)
+            .background(BubbleGrey, RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomEnd = 18.dp, bottomStart = 4.dp))
+            .padding(horizontal = 14.dp, vertical = 10.dp)
+        if (text != null) {
+            Text(
+                buildAnnotatedString {
+                    withStyle(SpanStyle(color = TextMuted, fontStyle = FontStyle.Italic)) { append(text) }
+                    withStyle(SpanStyle(color = FooterGrey)) { append(" " + "•".repeat(dots)) }
+                },
+                fontSize = 15.sp,
+                lineHeight = 21.sp,
+                modifier = bubble,
+            )
+        } else {
+            Text("•".repeat(dots), color = TextMuted, fontSize = 15.sp, modifier = bubble.widthIn(min = 24.dp))
+        }
     }
 }
 

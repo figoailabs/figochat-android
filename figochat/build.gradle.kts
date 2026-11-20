@@ -7,7 +7,7 @@ plugins {
 
 // Published from GitHub through JitPack: com.github.figoailabs:figochat-android:<tag>
 group = "com.github.figoailabs"
-version = "1.1.0"
+version = "2.0.0"
 
 android {
     namespace = "com.figolabs.figochat"
@@ -63,4 +63,7 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.7.0")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    // the real org.json: android.jar only has stubs in JVM unit tests
+    testImplementation("org.json:json:20240303")
 }

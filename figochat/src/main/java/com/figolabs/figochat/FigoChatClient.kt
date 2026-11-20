@@ -26,6 +26,7 @@ import java.util.concurrent.TimeUnit
  *  - POST /api/v1/stt                            speech to text (multipart, field `audio`)
  *  - POST /api/v1/cdn/upload/ocr/{assistantId}   upload files to the CDN (images are OCR'd)
  *  - GET  /api/v1/realtime/config                public Pusher settings for live agent messages
+ *  - GET  /api/v1/sdk/assistant/{assistantId}    the assistant's name, persona, waiting and intro messages
  */
 class FigoChatClient internal constructor(private val config: FigoChatConfig) {
 
@@ -110,6 +111,20 @@ class FigoChatClient internal constructor(private val config: FigoChatConfig) {
                 throw FigoChatException(json.optString("responseMessage", "Upload failed."), json.optString("responseCode", "UPLOAD"))
             }
             urls
+        }
+    }
+
+    /** The assistant's display details: name, persona, waiting message and intro message. */
+    suspend fun getAssistant(): FigoAssistantInfo = withContext(Dispatchers.IO) {
+        execute(request(url("api", "v1", "sdk", "assistant", config.assistantId)).get().build()) { res ->
+            val data = parse(res).optJSONObject("responseData") ?: return@execute FigoAssistantInfo()
+            fun field(name: String) = if (data.isNull(name)) null else data.optString(name)
+            FigoAssistantInfo(
+                assistantName = field("assistantName"),
+                persona = field("persona"),
+                waitingMessage = field("waitingMessage"),
+                introMessage = field("introMessage"),
+            )
         }
     }
 

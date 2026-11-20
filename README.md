@@ -22,7 +22,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.figoailabs:figochat-android:1.1.0")
+    implementation("com.github.figoailabs:figochat-android:2.0.0")
 }
 ```
 
@@ -40,11 +40,12 @@ FigoChat.initialize(
     emailAddress = "ada@example.com",
     mobilePhone = "+2348012345678",
     primaryColor = "#F97316",
-    // optional
-    title = "Support",
-    welcomeMessage = "Hi Ada! How can I help you today?",
+    // optional: send the customer's first question for them
+    firstCustomerMessage = "Where is my order #1042?",
 )
 ```
+
+The header title, welcome message and waiting message come from the chatbot's settings in the FigoChat admin (**AI Chatbots** → your chatbot → **Edit**: **Persona** or **Name**, **Welcome Message**, **Choose a Waiting Message**), so they aren't passed to `initialize`. `firstCustomerMessage` is sent for the customer straight away; the chat opens with it and its reply, and continues the same thread.
 
 Java apps can call `FigoChat.initialize(...)` the same way. The optional parameters have overloads.
 

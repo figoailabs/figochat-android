@@ -8,6 +8,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.figolabs.figochat.FigoChat
+import com.figolabs.figochat.FigoChatConfig
 import com.figolabs.figochat.FigoChatException
 
 /** A classic View-based app opening the chat; Compose apps can embed FigoChatScreen() directly. */
@@ -15,7 +16,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Build with -PfigoApiKey=... -PfigoAssistantId=...; without them the chat still opens and messages fail.
+        // Build with -PfigoApiKey=... -PfigoAssistantId=... (and optionally -PfigoFirstMessage=...); without them the chat still opens and messages fail.
         val apiKey = BuildConfig.FIGO_API_KEY
         val assistantId = BuildConfig.FIGO_ASSISTANT_ID
         val warning = when {
@@ -31,8 +32,9 @@ class MainActivity : AppCompatActivity() {
                 emailAddress = "ada@example.com",
                 mobilePhone = "+2348012345678",
                 primaryColor = "#F97316",
-                title = "Support",
-                welcomeMessage = "<p><b>Hi Ada!</b> How can I help you today?</p><ul><li>Buy airtime or data</li><li>Pay bills</li></ul><p>Visit <a href=\"https://figolabs.ai\">our site</a>.</p>",
+                baseUrl = BuildConfig.FIGO_BASE_URL.ifBlank { FigoChatConfig.DEFAULT_BASE_URL },
+                // the header title, intro and waiting messages come from the assistant's settings in the FigoChat admin
+                firstCustomerMessage = BuildConfig.FIGO_FIRST_MESSAGE.takeIf { it.isNotBlank() },
             )
             null
         } catch (e: FigoChatException) {

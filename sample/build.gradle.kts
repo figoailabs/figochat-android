@@ -13,8 +13,12 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
+        buildConfigField("String", "FIGO_BASE_URL", "\"${project.findProperty("figoBaseUrl") ?: ""}\"")
         buildConfigField("String", "FIGO_API_KEY", "\"${project.findProperty("figoApiKey") ?: ""}\"")
         buildConfigField("String", "FIGO_ASSISTANT_ID", "\"${project.findProperty("figoAssistantId") ?: ""}\"")
+        // optional: a question sent on the user's behalf as soon as the SDK initializes
+        val firstMessage = (project.findProperty("figoFirstMessage") as String?).orEmpty().replace("\\", "\\\\").replace("\"", "\\\"")
+        buildConfigField("String", "FIGO_FIRST_MESSAGE", "\"$firstMessage\"")
     }
 
     buildTypes {

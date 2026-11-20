@@ -12,11 +12,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.figolabs.figochat.FigoAssistantInfo
 import com.figolabs.figochat.FigoAttachment
 import com.figolabs.figochat.FigoChat
 import com.figolabs.figochat.FigoChatException
 import com.figolabs.figochat.FigoChatMessage
 import com.figolabs.figochat.FigoErrorContext
+import com.figolabs.figochat.FigoFirstExchange
 import com.figolabs.figochat.FigoMessageRole
 import com.figolabs.figochat.FigoMessageStatus
 import com.figolabs.figochat.FigoRealtimeSubscription
@@ -52,8 +54,44 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
     val messages = mutableStateListOf<FigoChatMessage>()
     internal val pending = mutableStateListOf<PendingFile>()
     var input by mutableStateOf("")
-    var waiting by mutableStateOf(false)
+    private var replying by mutableStateOf(false)
+
+    /** Session data that arrives after initialize: the assistant's details and the firstCustomerMessage exchange. */
+    internal var assistant by mutableStateOf<FigoAssistantInfo?>(null)
         private set
+    internal var first by mutableStateOf<FigoFirstExchange?>(null)
+        private set
+
+    /** A reply is on its way: one the user just asked for, or the one to firstCustomerMessage. Sending is blocked. */
+    val waiting: Boolean get() = replying || first?.done == false
+
+    /** Header title: the assistant's persona, else its name, else "Chat". */
+    val title: String
+        get() = assistant?.persona?.trim()?.takeIf { it.isNotEmpty() }
+            ?: assistant?.assistantName?.trim()?.takeIf { it.isNotEmpty() }
+            ?: "Chat"
+
+    /** The assistant's waiting message (HTML) shown while a reply is on its way, if it has one. */
+    internal val waitingMessage: String? get() = assistant?.waitingMessage?.trim()?.takeIf { it.isNotEmpty() }
+
+    /**
+     * What the screen shows, oldest first: the intro message, the firstCustomerMessage exchange, then the messages
+     * sent from this screen.
+     */
+    internal val displayMessages: List<FigoChatMessage>
+        get() = buildList {
+            assistant?.introMessage?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                add(FigoChatMessage(id = "intro", role = FigoMessageRole.ASSISTANT, text = it, createdAt = 0))
+            }
+            first?.let { f ->
+                add(f.message)
+                f.reply?.let(::add)
+                f.error?.let {
+                    add(FigoChatMessage(id = "${f.message.id}-error", role = FigoMessageRole.SYSTEM, text = friendlyMessage(it, FigoErrorContext.CHAT)))
+                }
+            }
+            addAll(messages)
+        }
     var recording by mutableStateOf(false)
         private set
     var recordingMillis by mutableLongStateOf(0L)
@@ -67,7 +105,6 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Every error the screen shows, for the host app's logging. */
     val errors: SharedFlow<FigoChatException> = _errors.asSharedFlow()
 
-    private var ids = 0L
     private var subscription: FigoRealtimeSubscription? = null
     private var recorder: MediaRecorder? = null
     private var recordFile: File? = null
@@ -75,25 +112,23 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
     private var noticeJob: Job? = null
 
     init {
-        resetMessages()
-        syncRealtime()
+        syncSession()
         viewModelScope.launch {
-            FigoChat.version.drop(1).collect {
-                if (FigoChat.isInitialized && FigoChat.threadId == null) resetMessages()
-                syncRealtime()
-            }
+            // initialize / reset / logout start a new conversation: drop this screen's messages
+            FigoChat.conversation.drop(1).collect { messages.clear() }
+        }
+        viewModelScope.launch {
+            FigoChat.version.drop(1).collect { syncSession() }
         }
     }
 
-    private fun newId() = "${System.currentTimeMillis()}-${ids++}"
+    private fun newId() = FigoChat.newMessageId()
 
-    private fun resetMessages() {
-        messages.clear()
-        if (FigoChat.isInitialized) {
-            FigoChat.config.welcomeMessage?.takeIf { it.isNotBlank() }?.let {
-                messages += FigoChatMessage(id = "welcome", role = FigoMessageRole.ASSISTANT, text = it)
-            }
-        }
+    /** Picks up session data that arrived (assistant details, first exchange) and the thread it may have started. */
+    private fun syncSession() {
+        assistant = FigoChat.assistantInfo
+        first = FigoChat.firstExchange
+        syncRealtime()
     }
 
     private fun report(e: Throwable): FigoChatException {
@@ -148,7 +183,7 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun ask(message: FigoChatMessage) {
-        waiting = true
+        replying = true
         viewModelScope.launch {
             try {
                 val reply = FigoChat.client.sendMessage(message.text, message.attachments.map { it.url })
@@ -170,7 +205,7 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
                 replace(message.id) { it.copy(status = FigoMessageStatus.ERROR) }
                 messages += FigoChatMessage(id = newId(), role = FigoMessageRole.SYSTEM, text = friendlyMessage(err, FigoErrorContext.CHAT))
             } finally {
-                waiting = false
+                replying = false
             }
         }
     }
@@ -200,13 +235,17 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun retry(message: FigoChatMessage) {
         if (waiting) return
+        if (message.id == first?.message?.id) {
+            FigoChat.retryFirstMessage()
+            return
+        }
         replace(message.id) { it.copy(status = FigoMessageStatus.SENDING) }
         ask(message)
     }
 
     fun newConversation() {
         if (waiting) return
-        FigoChat.resetConversation() // version change resets the messages and the subscription
+        FigoChat.resetConversation() // the conversation change clears the messages; the version change the subscription
         pending.clear()
         input = ""
     }

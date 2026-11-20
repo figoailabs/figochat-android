@@ -14,10 +14,12 @@ data class FigoChatConfig(
     val primaryColor: String,
     /** API host. */
     val baseUrl: String = DEFAULT_BASE_URL,
-    /** Header title. */
-    val title: String = "Chat",
-    /** First assistant message, shown before the user writes anything. */
-    val welcomeMessage: String? = null,
+    /**
+     * A message sent on the customer's behalf as soon as [FigoChat.initialize] runs, for example the question they
+     * typed on your own screen before opening the chat. It is sent like any other message: the reply and the thread
+     * id are kept, so the chat continues from it and shows both when it opens.
+     */
+    val firstCustomerMessage: String? = null,
     /** Resumes an earlier conversation; use the value from [FigoChat.threadId]. */
     val threadId: String? = null,
     val maxFiles: Int = 5,
@@ -32,6 +34,18 @@ data class FigoChatConfig(
         const val DEFAULT_BASE_URL = "https://api.figolabs.ai"
     }
 }
+
+/**
+ * Display details of the assistant, from GET /api/v1/sdk/assistant/{assistantId}. The chat header shows [persona]
+ * (or [assistantName]), the first bubble shows [introMessage] (HTML), and [waitingMessage] is shown on the left
+ * while a reply is being prepared. Any field may be null.
+ */
+data class FigoAssistantInfo(
+    val assistantName: String? = null,
+    val persona: String? = null,
+    val waitingMessage: String? = null,
+    val introMessage: String? = null,
+)
 
 /** Error thrown by every SDK call. [code] is the API response code or the HTTP status. */
 class FigoChatException(message: String, val code: String, cause: Throwable? = null) : Exception(message, cause)
