@@ -17,6 +17,9 @@ import com.figolabs.figochat.FigoAttachment
 import com.figolabs.figochat.FigoChat
 import com.figolabs.figochat.FigoChatException
 import com.figolabs.figochat.FigoChatMessage
+import com.figolabs.figochat.FigoCountries
+import com.figolabs.figochat.FigoCountry
+import com.figolabs.figochat.FigoDetailsField
 import com.figolabs.figochat.FigoErrorContext
 import com.figolabs.figochat.FigoFirstExchange
 import com.figolabs.figochat.FigoMessageRole
@@ -25,6 +28,7 @@ import com.figolabs.figochat.FigoRealtimeSubscription
 import com.figolabs.figochat.FigoUploadFile
 import com.figolabs.figochat.friendlyMessage
 import com.figolabs.figochat.htmlToText
+import com.figolabs.figochat.validateCustomerDetails
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -61,6 +65,37 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
         private set
     internal var first by mutableStateOf<FigoFirstExchange?>(null)
         private set
+
+    /** The chat asks for the customer's name, email and phone before the conversation starts. */
+    internal var needsDetails by mutableStateOf(false)
+        private set
+
+    // ---- details form ----
+    internal var detailsName by mutableStateOf("")
+    internal var detailsEmail by mutableStateOf("")
+    internal var detailsPhone by mutableStateOf("")
+    internal var detailsCountry by mutableStateOf(FigoCountries.default(if (FigoChat.isInitialized) FigoChat.config.defaultCountry else null))
+    internal var detailsError by mutableStateOf<String?>(null)
+        private set
+    internal var detailsErrorField by mutableStateOf<FigoDetailsField?>(null)
+        private set
+
+    /** Validates the form; on success the details are remembered and the chat starts. */
+    internal fun submitDetails() {
+        val result = validateCustomerDetails(detailsName, detailsEmail, detailsCountry, detailsPhone)
+        detailsError = result.error
+        detailsErrorField = result.field
+        val details = result.details ?: return
+        FigoChat.submitDetails(details)
+    }
+
+    internal fun skipDetails() {
+        detailsError = null
+        detailsErrorField = null
+        FigoChat.skipDetails()
+    }
+
+    internal fun searchCountries(query: String): List<FigoCountry> = FigoCountries.search(query)
 
     /** A reply is on its way: one the user just asked for, or the one to firstCustomerMessage. Sending is blocked. */
     val waiting: Boolean get() = replying || first?.done == false
@@ -126,6 +161,14 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Picks up session data that arrived (assistant details, first exchange) and the thread it may have started. */
     private fun syncSession() {
+        val asking = FigoChat.needsDetails
+        if (asking && !needsDetails && FigoChat.isInitialized) {
+            // a new initialize may ask again, possibly with another default country
+            detailsCountry = FigoCountries.default(FigoChat.config.defaultCountry)
+            detailsError = null
+            detailsErrorField = null
+        }
+        needsDetails = asking
         assistant = FigoChat.assistantInfo
         first = FigoChat.firstExchange
         syncRealtime()

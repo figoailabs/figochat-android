@@ -19,6 +19,11 @@ android {
         // optional: a question sent on the user's behalf as soon as the SDK initializes
         val firstMessage = (project.findProperty("figoFirstMessage") as String?).orEmpty().replace("\\", "\\\\").replace("\"", "\\\"")
         buildConfigField("String", "FIGO_FIRST_MESSAGE", "\"$firstMessage\"")
+        // optional customer details; leave them out to see the details form for anonymous visitors
+        fun prop(name: String) = (project.findProperty(name) as String?).orEmpty().replace("\\", "\\\\").replace("\"", "\\\"")
+        buildConfigField("String", "FIGO_FULL_NAME", "\"${prop("figoFullName")}\"")
+        buildConfigField("String", "FIGO_EMAIL", "\"${prop("figoEmail")}\"")
+        buildConfigField("String", "FIGO_PHONE", "\"${prop("figoPhone")}\"")
     }
 
     buildTypes {

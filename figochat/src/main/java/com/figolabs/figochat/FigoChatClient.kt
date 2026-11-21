@@ -28,7 +28,15 @@ import java.util.concurrent.TimeUnit
  *  - GET  /api/v1/realtime/config                public Pusher settings for live agent messages
  *  - GET  /api/v1/sdk/assistant/{assistantId}    the assistant's name, persona, waiting and intro messages
  */
-class FigoChatClient internal constructor(private val config: FigoChatConfig) {
+class FigoChatClient internal constructor(config: FigoChatConfig) {
+
+    /** Settings used for each request; [FigoChat.setCustomerDetails] swaps in the customer's details. */
+    @Volatile
+    private var config: FigoChatConfig = config
+
+    internal fun updateConfig(config: FigoChatConfig) {
+        this.config = config
+    }
 
     private val http = OkHttpClient.Builder()
         .callTimeout(config.timeoutMillis, TimeUnit.MILLISECONDS)

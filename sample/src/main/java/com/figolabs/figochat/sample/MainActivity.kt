@@ -16,7 +16,8 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Build with -PfigoApiKey=... -PfigoAssistantId=... (and optionally -PfigoFirstMessage=...); without them the chat still opens and messages fail.
+        // Build with -PfigoApiKey=... -PfigoAssistantId=... (optionally -PfigoFirstMessage=..., -PfigoFullName=..., -PfigoEmail=...,
+        // -PfigoPhone=...); without a key the chat still opens and messages fail. Without name, email and phone it shows the details form.
         val apiKey = BuildConfig.FIGO_API_KEY
         val assistantId = BuildConfig.FIGO_ASSISTANT_ID
         val warning = when {
@@ -28,10 +29,11 @@ class MainActivity : AppCompatActivity() {
             FigoChat.initialize(
                 apiKey = apiKey.ifBlank { "missing-api-key" },
                 assistantId = assistantId.ifBlank { "missing-assistant-id" },
-                fullName = "Ada Lovelace",
-                emailAddress = "ada@example.com",
-                mobilePhone = "+2348012345678",
                 primaryColor = "#F97316",
+                // pass the signed-in user's details when you have them; left empty, the chat asks the visitor first
+                fullName = BuildConfig.FIGO_FULL_NAME,
+                emailAddress = BuildConfig.FIGO_EMAIL,
+                mobilePhone = BuildConfig.FIGO_PHONE,
                 baseUrl = BuildConfig.FIGO_BASE_URL.ifBlank { FigoChatConfig.DEFAULT_BASE_URL },
                 // the header title, intro and waiting messages come from the assistant's settings in the FigoChat admin
                 firstCustomerMessage = BuildConfig.FIGO_FIRST_MESSAGE.takeIf { it.isNotBlank() },

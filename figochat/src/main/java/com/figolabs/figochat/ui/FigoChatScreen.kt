@@ -17,6 +17,27 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.window.Dialog
+import com.figolabs.figochat.FigoDetailsField
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -153,77 +174,81 @@ fun FigoChatScreen(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                IconButton(onClick = vm::newConversation) { Icon(Icons.Filled.Refresh, "New conversation", tint = onPrimary) }
+                if (!vm.needsDetails) IconButton(onClick = vm::newConversation) { Icon(Icons.Filled.Refresh, "New conversation", tint = onPrimary) }
                 if (onClose != null) IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "Close chat", tint = onPrimary) }
             }
         }
 
-        val items = vm.displayMessages.asReversed()
-        LazyColumn(
-            Modifier.weight(1f).fillMaxWidth(),
-            reverseLayout = true,
-            contentPadding = PaddingValues(12.dp),
-            // Alignment.Bottom keeps a short conversation at the bottom; spacedBy(8.dp) alone aligns to the top
-            // and overrides reverseLayout
-            verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.Bottom),
-        ) {
-            if (vm.waiting) item(key = "typing") { WaitingBubble(vm.waitingMessage) }
-            items(items, key = { it.id }) { m -> MessageBubble(m, primary, onPrimary) { vm.retry(m) } }
-        }
-
-        vm.notice?.let {
-            Text(
-                it,
-                color = Color.White,
-                fontSize = 13.sp,
-                modifier = Modifier
-                    .padding(horizontal = 12.dp, vertical = 4.dp)
-                    .fillMaxWidth()
-                    .background(Color(0xFF323232), RoundedCornerShape(8.dp))
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-            )
-        }
-
-        if (vm.pending.isNotEmpty()) PendingRow(vm, primary)
-        HorizontalDivider(thickness = 0.5.dp, color = Color(0xFFE5E7EB))
-
-        if (vm.recording || vm.transcribing) {
-            RecordingBar(vm, primary, onPrimary)
+        if (vm.needsDetails) {
+            DetailsForm(vm, primary, onPrimary, Modifier.weight(1f).fillMaxWidth())
         } else {
-            val hasText = vm.input.isNotBlank()
-            val canSend = !vm.waiting && (hasText || vm.pending.any { it.url != null && !it.failed })
-            val showMic = enableVoice && !canSend && !hasText
-            Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 8.dp), verticalAlignment = Alignment.Bottom) {
-                if (enableAttachments) {
-                    IconButton(onClick = { filePicker.launch(arrayOf("*/*")) }, enabled = !vm.waiting) {
-                        Icon(Icons.Filled.AttachFile, "Attach files", tint = TextMuted)
-                    }
-                }
-                TextField(
-                    value = vm.input,
-                    onValueChange = { if (it.length <= 4000) vm.input = it },
-                    placeholder = { Text(placeholder, color = Color(0xFF8A8F98)) },
-                    modifier = Modifier.weight(1f).heightIn(min = 44.dp, max = 140.dp),
-                    shape = RoundedCornerShape(22.dp),
-                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = BubbleGrey,
-                        unfocusedContainerColor = BubbleGrey,
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent,
-                        cursorColor = primary,
-                        focusedTextColor = TextDark,
-                        unfocusedTextColor = TextDark,
-                    ),
+            val items = vm.displayMessages.asReversed()
+            LazyColumn(
+                Modifier.weight(1f).fillMaxWidth(),
+                reverseLayout = true,
+                contentPadding = PaddingValues(12.dp),
+                // Alignment.Bottom keeps a short conversation at the bottom; spacedBy(8.dp) alone aligns to the top
+                // and overrides reverseLayout
+                verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.Bottom),
+            ) {
+                if (vm.waiting) item(key = "typing") { WaitingBubble(vm.waitingMessage) }
+                items(items, key = { it.id }) { m -> MessageBubble(m, primary, onPrimary) { vm.retry(m) } }
+            }
+
+            vm.notice?.let {
+                Text(
+                    it,
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    modifier = Modifier
+                        .padding(horizontal = 12.dp, vertical = 4.dp)
+                        .fillMaxWidth()
+                        .background(Color(0xFF323232), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
                 )
-                Spacer(Modifier.size(8.dp))
-                RoundButton(
-                    color = primary,
-                    enabled = if (showMic) !vm.waiting else canSend,
-                    onClick = { if (showMic) startVoice() else vm.send() },
-                ) {
-                    if (showMic) Icon(Icons.Filled.Mic, "Record a voice message", tint = onPrimary)
-                    else Icon(Icons.AutoMirrored.Filled.Send, "Send message", tint = onPrimary, modifier = Modifier.size(20.dp))
+            }
+
+            if (vm.pending.isNotEmpty()) PendingRow(vm, primary)
+            HorizontalDivider(thickness = 0.5.dp, color = Color(0xFFE5E7EB))
+
+            if (vm.recording || vm.transcribing) {
+                RecordingBar(vm, primary, onPrimary)
+            } else {
+                val hasText = vm.input.isNotBlank()
+                val canSend = !vm.waiting && (hasText || vm.pending.any { it.url != null && !it.failed })
+                val showMic = enableVoice && !canSend && !hasText
+                Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 8.dp), verticalAlignment = Alignment.Bottom) {
+                    if (enableAttachments) {
+                        IconButton(onClick = { filePicker.launch(arrayOf("*/*")) }, enabled = !vm.waiting) {
+                            Icon(Icons.Filled.AttachFile, "Attach files", tint = TextMuted)
+                        }
+                    }
+                    TextField(
+                        value = vm.input,
+                        onValueChange = { if (it.length <= 4000) vm.input = it },
+                        placeholder = { Text(placeholder, color = Color(0xFF8A8F98)) },
+                        modifier = Modifier.weight(1f).heightIn(min = 44.dp, max = 140.dp),
+                        shape = RoundedCornerShape(22.dp),
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = BubbleGrey,
+                            unfocusedContainerColor = BubbleGrey,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                            cursorColor = primary,
+                            focusedTextColor = TextDark,
+                            unfocusedTextColor = TextDark,
+                        ),
+                    )
+                    Spacer(Modifier.size(8.dp))
+                    RoundButton(
+                        color = primary,
+                        enabled = if (showMic) !vm.waiting else canSend,
+                        onClick = { if (showMic) startVoice() else vm.send() },
+                    ) {
+                        if (showMic) Icon(Icons.Filled.Mic, "Record a voice message", tint = onPrimary)
+                        else Icon(Icons.AutoMirrored.Filled.Send, "Send message", tint = onPrimary, modifier = Modifier.size(20.dp))
+                    }
                 }
             }
         }
@@ -239,6 +264,134 @@ fun FigoChatScreen(
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 6.dp),
         )
+    }
+}
+
+/** Asks an anonymous visitor for their name, email and phone before the conversation starts. */
+@Composable
+private fun DetailsForm(vm: FigoChatViewModel, primary: Color, onPrimary: Color, modifier: Modifier) {
+    var picking by remember { mutableStateOf(false) }
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedBorderColor = primary,
+        focusedLabelColor = primary,
+        cursorColor = primary,
+        focusedTextColor = TextDark,
+        unfocusedTextColor = TextDark,
+    )
+    val invalid = vm.detailsErrorField
+    Column(modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 24.dp)) {
+        Text("Personalize your chat", color = TextDark, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(6.dp))
+        Text("Tell us a little about yourself so we can tailor this conversation to you.", color = TextMuted, fontSize = 14.sp, lineHeight = 20.sp)
+        Spacer(Modifier.height(20.dp))
+        OutlinedTextField(
+            value = vm.detailsName,
+            onValueChange = { if (it.length <= 100) vm.detailsName = it },
+            label = { Text("Full name") },
+            singleLine = true,
+            isError = invalid == FigoDetailsField.FULL_NAME,
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, keyboardType = KeyboardType.Text, imeAction = ImeAction.Next),
+            colors = fieldColors,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(
+            value = vm.detailsEmail,
+            onValueChange = { if (it.length <= 254) vm.detailsEmail = it },
+            label = { Text("Email address") },
+            singleLine = true,
+            isError = invalid == FigoDetailsField.EMAIL_ADDRESS,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
+            colors = fieldColors,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            val country = vm.detailsCountry
+            OutlinedButton(
+                onClick = { picking = true },
+                shape = RoundedCornerShape(4.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp),
+                modifier = Modifier.padding(top = 8.dp).height(56.dp).semantics { contentDescription = "Country code: ${country.name} +${country.dial}" },
+            ) {
+                Text("${country.flag} +${country.dial}", color = TextDark, fontSize = 15.sp)
+                Icon(Icons.Filled.ArrowDropDown, null, tint = TextMuted)
+            }
+            Spacer(Modifier.width(8.dp))
+            OutlinedTextField(
+                value = vm.detailsPhone,
+                onValueChange = { if (it.length <= 20) vm.detailsPhone = it },
+                label = { Text("Phone number") },
+                singleLine = true,
+                isError = invalid == FigoDetailsField.MOBILE_PHONE,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { vm.submitDetails() }),
+                colors = fieldColors,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        vm.detailsError?.let {
+            Spacer(Modifier.height(10.dp))
+            Text(it, color = ErrorRed, fontSize = 13.sp, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+        }
+        Spacer(Modifier.height(20.dp))
+        Button(
+            onClick = vm::submitDetails,
+            colors = ButtonDefaults.buttonColors(containerColor = primary, contentColor = onPrimary),
+            shape = RoundedCornerShape(22.dp),
+            modifier = Modifier.fillMaxWidth().height(46.dp),
+        ) { Text("Start chat", fontSize = 15.sp, fontWeight = FontWeight.SemiBold) }
+        TextButton(onClick = vm::skipDetails, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+            Text("Skip", color = TextMuted, fontSize = 14.sp)
+        }
+    }
+    if (picking) CountryPicker(vm, primary, onDismiss = { picking = false })
+}
+
+/** Searchable list of countries with their flag and dialing code. */
+@Composable
+private fun CountryPicker(vm: FigoChatViewModel, primary: Color, onDismiss: () -> Unit) {
+    var query by remember { mutableStateOf("") }
+    val results = remember(query) { vm.searchCountries(query) }
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(shape = RoundedCornerShape(16.dp), color = Color.White, modifier = Modifier.fillMaxWidth().heightIn(max = 560.dp)) {
+            Column {
+                Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Country code", color = TextDark, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                    IconButton(onClick = onDismiss) { Icon(Icons.Filled.Close, "Close", tint = TextMuted) }
+                }
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    placeholder = { Text("Search", color = Color(0xFF8A8F98)) },
+                    leadingIcon = { Icon(Icons.Filled.Search, null, tint = TextMuted) },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = primary, cursorColor = primary, focusedTextColor = TextDark, unfocusedTextColor = TextDark),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                )
+                LazyColumn(Modifier.fillMaxWidth()) {
+                    items(results, key = { it.code }) { c ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    vm.detailsCountry = c
+                                    onDismiss()
+                                }
+                                .background(if (c.code == vm.detailsCountry.code) BubbleGrey else Color.Transparent)
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(c.flag, fontSize = 18.sp)
+                            Spacer(Modifier.width(12.dp))
+                            Text(c.name, color = TextDark, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                            Text("+${c.dial}", color = TextMuted, fontSize = 14.sp)
+                        }
+                    }
+                    if (results.isEmpty()) item { Text("No matches", color = TextMuted, fontSize = 14.sp, modifier = Modifier.padding(16.dp)) }
+                }
+            }
+        }
     }
 }
 

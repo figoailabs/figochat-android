@@ -11,5 +11,11 @@
             android:exported="false"
             android:theme="@android:style/Theme.Material.Light.NoActionBar"
             android:windowSoftInputMode="adjustResize" />
+
+        <!-- captures the application context so the details form can remember a visitor's details -->
+        <provider
+            android:name="com.figolabs.figochat.FigoChatInitProvider"
+            android:authorities="${applicationId}.figochat-init"
+            android:exported="false" />
     </application>
 </manifest>

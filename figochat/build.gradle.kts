@@ -7,7 +7,7 @@ plugins {
 
 // Published from GitHub through JitPack: com.github.figoailabs:figochat-android:<tag>
 group = "com.github.figoailabs"
-version = "2.0.0"
+version = "2.1.0"
 
 android {
     namespace = "com.figolabs.figochat"

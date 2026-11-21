@@ -6,10 +6,12 @@ data class FigoChatConfig(
     val apiKey: String,
     /** Assistant the user chats with. */
     val assistantId: String,
-    val fullName: String,
-    val emailAddress: String,
-    /** Phone number in international format, e.g. +2348012345678. */
-    val mobilePhone: String,
+    /** The customer's name; "" when unknown (see [askForDetails]). */
+    val fullName: String = "",
+    /** The customer's email; "" when unknown. */
+    val emailAddress: String = "",
+    /** Phone number in international format, e.g. +2348012345678; "" when unknown. */
+    val mobilePhone: String = "",
     /** Brand color as hex: #RGB, #RRGGBB or #RRGGBBAA. */
     val primaryColor: String,
     /** API host. */
@@ -27,6 +29,13 @@ data class FigoChatConfig(
     /** true sends a transcribed voice note right away; false puts the text in the input for editing. */
     val autoSendVoice: Boolean = true,
     val timeoutMillis: Long = 120_000,
+    /**
+     * When [fullName], [emailAddress] and [mobilePhone] are all empty, the chat first asks the visitor for them
+     * (they can skip). Details they enter are remembered on the device for this assistant. false chats without them.
+     */
+    val askForDetails: Boolean = true,
+    /** Country preselected in the details form's phone field (ISO code such as NG or GB); null uses the device's region. */
+    val defaultCountry: String? = null,
 ) {
     override fun toString() = "FigoChatConfig(assistantId=$assistantId, baseUrl=$baseUrl, apiKey=***)"
 

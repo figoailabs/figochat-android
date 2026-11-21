@@ -56,11 +56,23 @@ class FigoChatSessionTest {
     private val server = MockWebServer()
     private lateinit var api: FakeApi
     private val originalDispatch = FigoChat.dispatchToMain
+    private val originalStore = FigoChat.detailsStore
+
+    /** Stands in for SharedPreferences. */
+    private class MemoryStore : FigoDetailsStore {
+        val saved = java.util.concurrent.ConcurrentHashMap<String, FigoCustomerDetails>()
+        override fun read(assistantId: String) = saved[assistantId]
+        override fun save(assistantId: String, details: FigoCustomerDetails) { saved[assistantId] = details }
+        override fun forget(assistantId: String) { saved.remove(assistantId) }
+    }
+    private lateinit var store: MemoryStore
 
     @Before
     fun setUp() {
         // no main looper in JVM tests: run listener callbacks right away
         FigoChat.dispatchToMain = { it.run() }
+        store = MemoryStore()
+        FigoChat.detailsStore = store
         server.start()
         useApi(FakeApi())
     }
@@ -70,6 +82,7 @@ class FigoChatSessionTest {
         api.gate.countDown()
         FigoChat.logout()
         FigoChat.dispatchToMain = originalDispatch
+        FigoChat.detailsStore = originalStore
         server.shutdown()
     }
 
@@ -176,5 +189,117 @@ class FigoChatSessionTest {
         Thread.sleep(300)
         assertNull(FigoChat.assistantInfo)
         assertTrue(FigoChat.isInitialized)
+    }
+
+    // ---------- details form (anonymous visitors) ----------
+
+    private fun initializeAnonymous(firstCustomerMessage: String? = null, askForDetails: Boolean = true, defaultCountry: String? = null) =
+        FigoChat.initialize(
+            apiKey = "k",
+            assistantId = "asst-1",
+            primaryColor = "#F97316",
+            baseUrl = server.url("/").toString(),
+            firstCustomerMessage = firstCustomerMessage,
+            askForDetails = askForDetails,
+            defaultCountry = defaultCountry,
+        )
+
+    private fun chatRequests() = api.requests.filter { it.first.path.orEmpty().startsWith("/api/v1/chat/assistant/") }
+
+    @Test
+    fun withoutNameEmailAndPhoneTheChatAsksForThemAndTheFirstMessageWaitsForTheForm() {
+        initializeAnonymous(firstCustomerMessage = "Where is my order?", defaultCountry = "NG")
+        api.gate.countDown()
+        eventually("assistant info") { FigoChat.assistantInfo != null }
+        assertTrue(FigoChat.needsDetails)
+        assertNull("not sent before the form", FigoChat.firstExchange)
+        assertTrue(chatRequests().isEmpty())
+        assertEquals(FigoCustomerDetails(), FigoChat.customerDetails)
+
+        val ng = FigoCountries.default(FigoChat.config.defaultCountry)
+        assertEquals("\uD83C\uDDF3\uD83C\uDDEC +234", "${ng.flag} +${ng.dial}")
+        assertTrue(FigoCountries.all.size > 200)
+
+        // validation, in order
+        assertEquals(FigoDetailsMessages.NAME, validateCustomerDetails("", "", ng, "").error)
+        assertEquals("Please enter your full name.", validateCustomerDetails(" A ", "", ng, "").error)
+        assertEquals("Please enter a valid email address.", validateCustomerDetails("Ada Lovelace", "ada@", ng, "").error)
+        assertEquals("Please enter a valid phone number.", validateCustomerDetails("Ada Lovelace", "ada@example.com", ng, "12").error)
+        assertEquals(FigoDetailsField.MOBILE_PHONE, validateCustomerDetails("Ada Lovelace", "ada@example.com", ng, "12").field)
+
+        // a GB number typed with its trunk 0
+        val gb = FigoCountries.byCode("gb")!!
+        assertEquals("\uD83C\uDDEC\uD83C\uDDE7 +44", "${gb.flag} +${gb.dial}")
+        val ok = validateCustomerDetails(" Ada Lovelace ", "ada@example.com", gb, "07700 900123")
+        assertNull(ok.error)
+        FigoChat.submitDetails(ok.details!!)
+
+        assertFalse(FigoChat.needsDetails)
+        val expected = FigoCustomerDetails("Ada Lovelace", "ada@example.com", "+447700900123")
+        assertEquals(expected, FigoChat.customerDetails)
+        eventually("first exchange") { FigoChat.firstExchange?.done == true }
+        val body = JSONObject(chatRequests().single().second)
+        assertEquals("Where is my order?", body.getString("question"))
+        assertEquals("Ada Lovelace", body.getString("fullName"))
+        assertEquals("ada@example.com", body.getString("emailAddress"))
+        assertEquals("+447700900123", body.getString("phoneNumber"))
+        assertEquals(expected, store.saved["asst-1"])
+    }
+
+    @Test
+    fun aReturningVisitorIsNotAskedAgainAndLogoutForgetsTheirDetails() {
+        store.saved["asst-1"] = FigoCustomerDetails("Ada Lovelace", "ada@example.com", "+447700900123")
+        initializeAnonymous()
+        assertFalse(FigoChat.needsDetails)
+        assertEquals("ada@example.com", FigoChat.customerDetails.emailAddress)
+        assertEquals("ada@example.com", FigoChat.config.emailAddress)
+        FigoChat.logout()
+        assertNull(store.saved["asst-1"])
+    }
+
+    @Test
+    fun skippingChatsWithoutDetailsAndIsRememberedForTheAppRun() {
+        api.gate.countDown()
+        initializeAnonymous(firstCustomerMessage = "Hi")
+        assertTrue(FigoChat.needsDetails)
+        FigoChat.skipDetails()
+        assertFalse(FigoChat.needsDetails)
+        eventually("first exchange") { FigoChat.firstExchange?.done == true }
+        val body = JSONObject(chatRequests().single().second)
+        assertEquals("Hi", body.getString("question"))
+        assertEquals("", body.getString("fullName"))
+        assertEquals("", body.getString("emailAddress"))
+        assertEquals("", body.getString("phoneNumber"))
+        assertNull(store.saved["asst-1"])
+
+        initializeAnonymous() // e.g. the chat opened again later in the same app run
+        assertFalse(FigoChat.needsDetails)
+    }
+
+    @Test
+    fun setCustomerDetailsOrAskForDetailsFalseAvoidTheForm() {
+        api.gate.countDown()
+        initializeAnonymous()
+        assertTrue(FigoChat.needsDetails)
+        FigoChat.setCustomerDetails(fullName = " Grace ", emailAddress = "g@x.io", mobilePhone = "+15550100")
+        assertFalse(FigoChat.needsDetails)
+        assertEquals(FigoCustomerDetails("Grace", "g@x.io", "+15550100"), FigoChat.customerDetails)
+        // later requests use them
+        kotlinx.coroutines.runBlocking { FigoChat.client.sendMessage("Hello") }
+        assertEquals("Grace", JSONObject(chatRequests().last().second).getString("fullName"))
+        FigoChat.logout()
+
+        initializeAnonymous(askForDetails = false)
+        assertFalse(FigoChat.needsDetails)
+        assertEquals(FigoCustomerDetails(), FigoChat.customerDetails)
+    }
+
+    @Test
+    fun countriesCanBeSearchedByNameCodeOrDialingCode() {
+        assertTrue(FigoCountries.search("+44").any { it.code == "GB" })
+        assertTrue(FigoCountries.search("ng").any { it.code == "NG" })
+        assertTrue(FigoCountries.search("nigeria").any { it.code == "NG" })
+        assertEquals("", FigoCountries.internationalNumber(FigoCountries.byCode("NG")!!, "0"))
+        assertEquals("+2348012345678", FigoCountries.internationalNumber(FigoCountries.byCode("NG")!!, "0801-234-5678"))
     }
 }

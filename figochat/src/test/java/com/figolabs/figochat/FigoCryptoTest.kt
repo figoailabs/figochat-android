@@ -15,7 +15,8 @@ class FigoCryptoTest {
             val first = crypto.encrypt(value)
             val second = crypto.encrypt(value)
             assertNotEquals(first, second)
-            if (value.isNotEmpty()) assertFalse(first.contains(value))
+            // only long values: a short one like "eu" can turn up by chance in random base64
+            if (value.length >= 8) assertFalse(first.contains(value))
             assertEquals(value, crypto.decrypt(first))
         }
     }
