@@ -293,9 +293,10 @@ internal object FigoCountries {
     /** Countries matching [query] (name, code or dialing code). */
     fun search(query: String): List<FigoCountry> = all.filter { it.matches(query, englishName(it)) }
 
-    /** The country to preselect: the one given, else the device's region, else Nigeria. */
-    fun default(preferred: String?): FigoCountry =
-        byCode(preferred) ?: byCode(Locale.getDefault().country) ?: byCode("NG")!!
+    /** The country to preselect: the one given (ISO code, any case) when it is known, else Nigeria. */
+    fun default(preferred: String?): FigoCountry = byCode(preferred) ?: byCode(DEFAULT_CODE)!!
+
+    const val DEFAULT_CODE = "NG"
 
     /** +{dial}{number}, dropping leading trunk zeros and anything that isn't a digit; "" when no digits. */
     fun internationalNumber(country: FigoCountry, local: String): String {

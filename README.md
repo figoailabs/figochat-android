@@ -22,7 +22,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.figoailabs:figochat-android:2.2.0")
+    implementation("com.github.figoailabs:figochat-android:2.3.0")
 }
 ```
 
@@ -49,7 +49,7 @@ The header title, welcome message and waiting message come from the chatbot's se
 
 Java apps can call `FigoChat.initialize(...)` the same way. The optional parameters have overloads.
 
-**Users you don't know:** leave `fullName`, `emailAddress` and `mobilePhone` out and the chat asks for them with a short form (name, email, phone with a searchable country-code picker) that the user can skip. Submitted details are used as if passed to `initialize` and remembered on the device (SharedPreferences); `logout` forgets them. Set `askForDetails: false` to skip the form, `defaultCountry` to preselect a country, and call `setCustomerDetails` when the user signs in later.
+**Users you don't know:** leave `fullName`, `emailAddress` and `mobilePhone` out and the chat asks for them with a short form (name, email, phone with a searchable country-code picker) that the user can skip. Submitted details are used as if passed to `initialize` and remembered on the device (SharedPreferences); `logout` forgets them. Set `askForDetails: false` to skip the form, `defaultCountry` to preselect a country in the phone field (an ISO code such as `GB`; when it's unset or unknown, Nigeria (`NG`) is preselected), and call `setCustomerDetails` when the user signs in later. When the company has both a terms and conditions link and a privacy policy link, the form shows an "I have read and agreed to the Terms, conditions, and privacy policy" checkbox, and **Start chat** stays disabled until it's ticked (**Skip** still works).
 
 ## Show the chat
 
@@ -94,6 +94,12 @@ Both are called on the main thread. Listeners can be added before `initialize` a
 Assistant replies arrive as HTML. The chat renders them natively as formatted text (bold, italics, underline, headings, lists, line breaks, tappable links), so users never see tags or markdown symbols. For your own UI, `htmlToRuns(html)` returns the same styled runs and `htmlToText(html)` returns plain text.
 
 Errors are `FigoChatException` with a `code` (`401`, `49`, `TIMEOUT`, `NETWORK`, …). The chat screen never shows these technical messages to users. It shows friendly text instead, such as "Chat isn't available right now. Please try again later." for a bad key, no credits or a plan limit, and "You seem to be offline…" for network problems. `onError` still receives the full technical error for your logs. Apps with their own UI can use `friendlyMessage(error)`.
+
+## 2.3.0
+
+- **Consent checkbox:** when the assistant's company has both a terms and conditions link and a privacy policy link, the details form shows "I have read and agreed to the Terms, conditions, and privacy policy". "Terms, conditions" and "privacy policy" open the links in the browser, the box uses your primary color, and **Start chat** is disabled until it's ticked. **Skip** is still available. With only one link (or none) there's no checkbox.
+- **Disclaimer:** the assistant's disclaimer message (for example "AI can make mistakes. Double-check sensitive information") is shown in small grey text above the "Powered by Figo AI Labs" footer, on the chat and on the details form. `FigoChat.assistantInfo` now has `disclaimerMessage` and `company` (`termsAndCondition`, `privacyPolicy`).
+- **Nigeria default country:** the phone field preselects `defaultCountry` when it's a known ISO code, otherwise Nigeria (`NG`). The device's region is no longer used.
 
 ## Live agent messages
 

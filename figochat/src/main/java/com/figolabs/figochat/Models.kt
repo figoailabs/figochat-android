@@ -34,7 +34,10 @@ data class FigoChatConfig(
      * (they can skip). Details they enter are remembered on the device for this assistant. false chats without them.
      */
     val askForDetails: Boolean = true,
-    /** Country preselected in the details form's phone field (ISO code such as NG or GB); null uses the device's region. */
+    /**
+     * Country preselected in the details form's phone field (ISO code such as NG or GB, any case). null, or a code
+     * that isn't a known country, preselects Nigeria (NG).
+     */
     val defaultCountry: String? = null,
 ) {
     override fun toString() = "FigoChatConfig(assistantId=$assistantId, baseUrl=$baseUrl, apiKey=***)"
@@ -47,13 +50,43 @@ data class FigoChatConfig(
 /**
  * Display details of the assistant, from GET /api/v1/sdk/assistant/{assistantId}. The chat header shows [persona]
  * (or [assistantName]), the first bubble shows [introMessage] (HTML), and [waitingMessage] is shown on the left
- * while a reply is being prepared. Any field may be null.
+ * while a reply is being prepared. [disclaimerMessage] is shown in small grey text above the "Powered by" footer,
+ * and the [company]'s terms and privacy links add a consent checkbox to the details form. Any field may be null.
  */
 data class FigoAssistantInfo(
     val assistantName: String? = null,
     val persona: String? = null,
     val waitingMessage: String? = null,
     val introMessage: String? = null,
+    /** Short note such as "AI can make mistakes. Double-check sensitive information". */
+    val disclaimerMessage: String? = null,
+    /** The assistant's company: its terms and privacy policy links. */
+    val company: FigoCompanyInfo? = null,
+) {
+    /** [disclaimerMessage] trimmed, or null when empty. */
+    internal val disclaimer: String? get() = disclaimerMessage?.trim()?.takeIf { it.isNotEmpty() }
+
+    /** The terms and privacy links, trimmed, when both are set; the details form then asks the visitor to agree. */
+    internal val consentLinks: Pair<String, String>?
+        get() {
+            val terms = company?.termsAndCondition?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            val privacy = company.privacyPolicy?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            return terms to privacy
+        }
+}
+
+/** true for an http(s) link that can be opened in the browser. */
+internal fun isWebUrl(value: String): Boolean {
+    val v = value.trim()
+    return (v.startsWith("https://", ignoreCase = true) || v.startsWith("http://", ignoreCase = true)) && v.length > 8 && v.none { it.isWhitespace() }
+}
+
+/** Company links from the assistant details. Either may be null. */
+data class FigoCompanyInfo(
+    /** Terms and conditions, usually a URL. */
+    val termsAndCondition: String? = null,
+    /** Privacy policy, usually a URL. */
+    val privacyPolicy: String? = null,
 )
 
 /** Error thrown by every SDK call. [code] is the API response code or the HTTP status. */

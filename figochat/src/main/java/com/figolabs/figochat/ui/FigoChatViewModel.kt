@@ -75,6 +75,8 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
     internal var detailsEmail by mutableStateOf("")
     internal var detailsPhone by mutableStateOf("")
     internal var detailsCountry by mutableStateOf(FigoCountries.default(if (FigoChat.isInitialized) FigoChat.config.defaultCountry else null))
+    /** The visitor ticked "I have read and agreed to the Terms, conditions, and privacy policy". */
+    internal var detailsAgreed by mutableStateOf(false)
     internal var detailsError by mutableStateOf<String?>(null)
         private set
     internal var detailsErrorField by mutableStateOf<FigoDetailsField?>(null)
@@ -82,6 +84,7 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Validates the form; on success the details are remembered and the chat starts. */
     internal fun submitDetails() {
+        if (!canSubmitDetails) return
         val result = validateCustomerDetails(detailsName, detailsEmail, detailsCountry, detailsPhone)
         detailsError = result.error
         detailsErrorField = result.field
@@ -94,6 +97,15 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
         detailsErrorField = null
         FigoChat.skipDetails()
     }
+
+    /** Terms and privacy links (both set) the visitor must agree to before starting the chat; null shows no checkbox. */
+    internal val consentLinks: Pair<String, String>? get() = assistant?.consentLinks
+
+    /** "Start chat" is enabled once the visitor agreed, when the assistant asks them to. */
+    internal val canSubmitDetails: Boolean get() = consentLinks == null || detailsAgreed
+
+    /** Shown in small grey text above the "Powered by" footer. */
+    internal val disclaimer: String? get() = assistant?.disclaimer
 
     internal fun searchCountries(query: String): List<FigoCountry> = FigoCountries.search(query)
 
@@ -165,6 +177,7 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
         if (asking && !needsDetails && FigoChat.isInitialized) {
             // a new initialize may ask again, possibly with another default country
             detailsCountry = FigoCountries.default(FigoChat.config.defaultCountry)
+            detailsAgreed = false
             detailsError = null
             detailsErrorField = null
         }

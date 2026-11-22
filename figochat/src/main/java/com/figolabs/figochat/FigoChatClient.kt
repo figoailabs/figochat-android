@@ -122,16 +122,21 @@ class FigoChatClient internal constructor(config: FigoChatConfig) {
         }
     }
 
-    /** The assistant's display details: name, persona, waiting message and intro message. */
+    /** The assistant's display details: name, persona, waiting message, intro message, disclaimer and company links. */
     suspend fun getAssistant(): FigoAssistantInfo = withContext(Dispatchers.IO) {
         execute(request(url("api", "v1", "sdk", "assistant", config.assistantId)).get().build()) { res ->
             val data = parse(res).optJSONObject("responseData") ?: return@execute FigoAssistantInfo()
-            fun field(name: String) = if (data.isNull(name)) null else data.optString(name)
+            fun field(obj: JSONObject, name: String) = if (obj.isNull(name)) null else obj.optString(name)
+            val company = data.optJSONObject("company")?.let {
+                FigoCompanyInfo(termsAndCondition = field(it, "termsAndCondition"), privacyPolicy = field(it, "privacyPolicy"))
+            }
             FigoAssistantInfo(
-                assistantName = field("assistantName"),
-                persona = field("persona"),
-                waitingMessage = field("waitingMessage"),
-                introMessage = field("introMessage"),
+                assistantName = field(data, "assistantName"),
+                persona = field(data, "persona"),
+                waitingMessage = field(data, "waitingMessage"),
+                introMessage = field(data, "introMessage"),
+                disclaimerMessage = field(data, "disclaimerMessage"),
+                company = company,
             )
         }
     }

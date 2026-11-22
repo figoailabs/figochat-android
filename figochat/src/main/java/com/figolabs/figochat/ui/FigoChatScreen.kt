@@ -24,8 +24,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
+import androidx.compose.ui.semantics.Role
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -106,6 +110,7 @@ import com.figolabs.figochat.FigoMessageRole
 import com.figolabs.figochat.FigoMessageStatus
 import com.figolabs.figochat.htmlToRuns
 import com.figolabs.figochat.htmlToText
+import com.figolabs.figochat.isWebUrl
 import com.figolabs.figochat.plainToRuns
 import kotlinx.coroutines.delay
 
@@ -252,6 +257,16 @@ fun FigoChatScreen(
                 }
             }
         }
+        vm.disclaimer?.let {
+            Text(
+                it,
+                fontSize = 10.sp,
+                lineHeight = 13.sp,
+                color = FooterGrey,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 4.dp),
+            )
+        }
         Text(
             buildAnnotatedString {
                 append("Powered by ")
@@ -330,6 +345,10 @@ private fun DetailsForm(vm: FigoChatViewModel, primary: Color, onPrimary: Color,
                 modifier = Modifier.weight(1f),
             )
         }
+        vm.consentLinks?.let { (terms, privacy) ->
+            Spacer(Modifier.height(14.dp))
+            ConsentRow(vm.detailsAgreed, terms, privacy, primary, onPrimary) { vm.detailsAgreed = it }
+        }
         vm.detailsError?.let {
             Spacer(Modifier.height(10.dp))
             Text(it, color = ErrorRed, fontSize = 13.sp, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
@@ -337,7 +356,13 @@ private fun DetailsForm(vm: FigoChatViewModel, primary: Color, onPrimary: Color,
         Spacer(Modifier.height(20.dp))
         Button(
             onClick = vm::submitDetails,
-            colors = ButtonDefaults.buttonColors(containerColor = primary, contentColor = onPrimary),
+            enabled = vm.canSubmitDetails,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = primary,
+                contentColor = onPrimary,
+                disabledContainerColor = primary.copy(alpha = 0.4f),
+                disabledContentColor = onPrimary.copy(alpha = 0.8f),
+            ),
             shape = RoundedCornerShape(22.dp),
             modifier = Modifier.fillMaxWidth().height(46.dp),
         ) { Text("Start chat", fontSize = 15.sp, fontWeight = FontWeight.SemiBold) }
@@ -346,6 +371,36 @@ private fun DetailsForm(vm: FigoChatViewModel, primary: Color, onPrimary: Color,
         }
     }
     if (picking) CountryPicker(vm, primary, onDismiss = { picking = false })
+}
+
+/**
+ * "I have read and agreed to the Terms, conditions, and privacy policy" with a checkbox. "Terms, conditions" and
+ * "privacy policy" open [terms] and [privacy] in the browser when they are http(s) links; tapping elsewhere on the row
+ * ticks the box.
+ */
+@Composable
+private fun ConsentRow(checked: Boolean, terms: String, privacy: String, primary: Color, onPrimary: Color, onChange: (Boolean) -> Unit) {
+    val linkStyle = TextLinkStyles(SpanStyle(color = primary, textDecoration = TextDecoration.Underline))
+    val label = remember(terms, privacy, primary) {
+        buildAnnotatedString {
+            append("I have read and agreed to the ")
+            if (isWebUrl(terms)) withLink(LinkAnnotation.Url(terms.trim(), linkStyle)) { append("Terms, conditions") } else append("Terms, conditions")
+            append(", and ")
+            if (isWebUrl(privacy)) withLink(LinkAnnotation.Url(privacy.trim(), linkStyle)) { append("privacy policy") } else append("privacy policy")
+        }
+    }
+    Row(
+        Modifier.fillMaxWidth().toggleable(value = checked, role = Role.Checkbox, onValueChange = onChange),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(
+            checked = checked,
+            onCheckedChange = null,
+            colors = CheckboxDefaults.colors(checkedColor = primary, checkmarkColor = onPrimary),
+            modifier = Modifier.padding(end = 10.dp),
+        )
+        Text(label, color = TextDark, fontSize = 14.sp, lineHeight = 20.sp, modifier = Modifier.weight(1f))
+    }
 }
 
 /** Searchable list of countries with their flag and dialing code. */

@@ -182,6 +182,79 @@ class FigoChatSessionTest {
     }
 
     @Test
+    fun theDisclaimerAndCompanyLinksAreParsed() {
+        val data = JSONObject(defaultAssistant.toString())
+            .put("disclaimerMessage", "  AI can make mistakes. Double-check sensitive information ")
+            .put("company", JSONObject().put("termsAndCondition", "https://example.com/terms").put("privacyPolicy", "https://example.com/privacy"))
+        useApi(FakeApi(assistant = data).also { it.gate.countDown() })
+        initialize()
+        eventually("assistant info") { FigoChat.assistantInfo != null }
+
+        val info = FigoChat.assistantInfo!!
+        assertEquals("Dave", info.persona)
+        assertEquals("  AI can make mistakes. Double-check sensitive information ", info.disclaimerMessage)
+        assertEquals("AI can make mistakes. Double-check sensitive information", info.disclaimer)
+        assertEquals(FigoCompanyInfo("https://example.com/terms", "https://example.com/privacy"), info.company)
+        assertEquals("https://example.com/terms" to "https://example.com/privacy", info.consentLinks)
+    }
+
+    @Test
+    fun missingOrNullDisclaimerAndCompanyAreNull() {
+        val data = JSONObject(defaultAssistant.toString()).put("disclaimerMessage", JSONObject.NULL).put("company", JSONObject.NULL)
+        useApi(FakeApi(assistant = data).also { it.gate.countDown() })
+        initialize()
+        eventually("assistant info") { FigoChat.assistantInfo != null }
+        assertNull(FigoChat.assistantInfo!!.disclaimerMessage)
+        assertNull(FigoChat.assistantInfo!!.company)
+        FigoChat.logout()
+
+        // older servers: neither field is sent, and the company may have null links
+        useApi(FakeApi(assistant = JSONObject(defaultAssistant.toString()).put("company", JSONObject().put("privacyPolicy", JSONObject.NULL))).also { it.gate.countDown() })
+        initialize()
+        eventually("assistant info") { FigoChat.assistantInfo != null }
+        val info = FigoChat.assistantInfo!!
+        assertEquals(FigoAssistantInfo("Support Bot", "Dave", "One moment…", "<b>Hi!</b>", company = FigoCompanyInfo()), info)
+        assertNull(info.disclaimer)
+        assertNull(info.consentLinks)
+    }
+
+    @Test
+    fun theConsentCheckboxNeedsBothTheTermsAndThePrivacyPolicy() {
+        fun links(terms: String?, privacy: String?) = FigoAssistantInfo(company = FigoCompanyInfo(terms, privacy)).consentLinks
+        assertEquals("https://a.com/t" to "https://a.com/p", links(" https://a.com/t ", "https://a.com/p\n"))
+        assertEquals("Our terms" to "Our privacy policy", links("Our terms", "Our privacy policy"))
+        assertNull(links("https://a.com/t", null))
+        assertNull(links(null, "https://a.com/p"))
+        assertNull(links("https://a.com/t", "   "))
+        assertNull(links("", "https://a.com/p"))
+        assertNull(FigoAssistantInfo().consentLinks)
+        assertNull(FigoAssistantInfo(disclaimerMessage = "  ").disclaimer)
+
+        assertTrue(isWebUrl("https://a.com/t"))
+        assertTrue(isWebUrl(" HTTP://a.com/t "))
+        assertFalse(isWebUrl("Our terms"))
+        assertFalse(isWebUrl("mailto:legal@a.com"))
+        assertFalse(isWebUrl("https://"))
+    }
+
+    @Test
+    fun theDefaultCountryIsTheOneGivenElseNigeriaWhateverTheDeviceRegion() {
+        val original = java.util.Locale.getDefault()
+        try {
+            java.util.Locale.setDefault(java.util.Locale.UK)
+            assertEquals("NG", FigoCountries.default(null).code)
+            assertEquals("NG", FigoCountries.default("").code)
+            assertEquals("NG", FigoCountries.default("  ").code)
+            assertEquals("NG", FigoCountries.default("XX").code)
+            assertEquals("NG", FigoCountries.default("Nigeria").code)
+            assertEquals("GH", FigoCountries.default(" gh ").code)
+            assertEquals("US", FigoCountries.default("US").code)
+        } finally {
+            java.util.Locale.setDefault(original)
+        }
+    }
+
+    @Test
     fun theChatStillWorksWhenTheAssistantDetailsCannotLoad() {
         val offline = server.url("/").toString()
         server.shutdown()

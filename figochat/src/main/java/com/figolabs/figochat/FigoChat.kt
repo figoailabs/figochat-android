@@ -227,7 +227,7 @@ object FigoChat {
     internal val realtime: FigoRealtimeConfigStore get() = requireSession().realtime
 
     /**
-     * The assistant's display details (name, persona, waiting message, intro message), or null until they have
+     * The assistant's display details (name, persona, waiting message, intro message, disclaimer, company links), or null until they have
      * loaded. They're fetched by [initialize]; [version] changes when they arrive.
      */
     @JvmStatic
