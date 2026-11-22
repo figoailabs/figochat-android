@@ -485,8 +485,11 @@ private fun MessageBubble(message: FigoChatMessage, primary: Color, onPrimary: C
             Modifier.widthIn(max = maxWidth).background(if (mine) primary else BubbleGrey, shape).padding(horizontal = 14.dp, vertical = 10.dp),
         ) {
             message.attachments.forEach { AttachmentView(it, textColor) }
-            val rich = remember(message.text, mine, primary, onPrimary) { richText(message.text, html = !mine, if (mine) onPrimary else primary) }
-            Text(rich, color = textColor, fontSize = 15.sp, lineHeight = 21.sp)
+            // files sent on their own show as just the files
+            if (message.text.isNotEmpty()) {
+                val rich = remember(message.text, mine, primary, onPrimary) { richText(message.text, html = !mine, if (mine) onPrimary else primary) }
+                Text(rich, color = textColor, fontSize = 15.sp, lineHeight = 21.sp)
+            }
         }
         when (message.status) {
             FigoMessageStatus.SENDING -> if (mine) Text("Sending…", fontSize = 11.sp, color = TextMuted, modifier = Modifier.padding(top = 3.dp))

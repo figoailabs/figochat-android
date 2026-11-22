@@ -22,7 +22,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.figoailabs:figochat-android:2.0.0")
+    implementation("com.github.figoailabs:figochat-android:2.2.0")
 }
 ```
 

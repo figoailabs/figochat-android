@@ -229,7 +229,8 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
         replying = true
         viewModelScope.launch {
             try {
-                val reply = FigoChat.client.sendMessage(message.text, message.attachments.map { it.url })
+                val question = message.text.ifEmpty { filesQuestion(message.attachments.size) }
+                val reply = FigoChat.client.sendMessage(question, message.attachments.map { it.url })
                 replace(message.id) { it.copy(status = FigoMessageStatus.SENT) }
                 FigoChat.emitMessageSent(message.text)
                 // in live agent mode the API relays the message to the agent and answers with nothing;
@@ -266,7 +267,8 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
         val message = FigoChatMessage(
             id = newId(),
             role = FigoMessageRole.USER,
-            text = text.ifEmpty { if (attachments.size > 1) "Please review the attached files." else "Please review the attached file." },
+            // files sent on their own show as just the files; the API still gets a short question (see ask)
+            text = text,
             attachments = attachments,
             status = FigoMessageStatus.SENDING,
         )
@@ -434,3 +436,7 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
         super.onCleared()
     }
 }
+
+/** Question sent to the API with files the user sent without text. It isn't shown in the chat. */
+internal fun filesQuestion(count: Int): String =
+    if (count > 1) "Please review the attached files." else "Please review the attached file."
