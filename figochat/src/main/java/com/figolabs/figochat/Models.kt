@@ -22,7 +22,10 @@ data class FigoChatConfig(
      * id are kept, so the chat continues from it and shows both when it opens.
      */
     val firstCustomerMessage: String? = null,
-    /** Resumes an earlier conversation; use the value from [FigoChat.threadId]. */
+    /**
+     * Resumes an earlier conversation; use the value from [FigoChat.threadId]. Its messages are shown when the chat
+     * opens. Without it, a conversation from this app run is resumed for an hour after its last message.
+     */
     val threadId: String? = null,
     val maxFiles: Int = 5,
     val maxFileSizeMB: Int = 10,
@@ -31,7 +34,8 @@ data class FigoChatConfig(
     val timeoutMillis: Long = 120_000,
     /**
      * When [fullName], [emailAddress] and [mobilePhone] are all empty, the chat first asks the visitor for them
-     * (they can skip). Details they enter are remembered on the device for this assistant. false chats without them.
+     * (they can skip). Details they enter are kept in memory only, for the conversation session: until an hour after
+     * the last message, [FigoChat.logout] or the end of the app process. false chats without them.
      */
     val askForDetails: Boolean = true,
     /**

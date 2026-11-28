@@ -6,7 +6,6 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.Cursor
 import android.net.Uri
-import org.json.JSONObject
 
 /** The customer's name, email and phone, as sent with every message. Empty strings when unknown. */
 data class FigoCustomerDetails(
@@ -18,52 +17,19 @@ data class FigoCustomerDetails(
     internal val isEmpty: Boolean get() = fullName.isEmpty() && emailAddress.isEmpty() && mobilePhone.isEmpty()
 }
 
-/** Where details typed into the details form are remembered, per assistant. A seam for JVM unit tests. */
-internal interface FigoDetailsStore {
-    fun read(assistantId: String): FigoCustomerDetails?
-    fun save(assistantId: String, details: FigoCustomerDetails)
-    fun forget(assistantId: String)
-}
-
 /**
- * Details kept in the app's SharedPreferences so returning visitors aren't asked again. Without an application
- * context (see [FigoChatInitProvider]) nothing is kept and the visitor is simply asked again.
+ * Details typed into the details form are kept in memory only (see [FigoChat]), so they're gone when the app process
+ * ends. Versions before 2.4.0 kept them in SharedPreferences; this deletes what they stored. Without an application
+ * context (see [FigoChatInitProvider]) there is nothing to delete. Errors are ignored.
  */
-internal object SharedPreferencesDetailsStore : FigoDetailsStore {
+internal object LegacyDetailsStore {
     private const val PREFS = "com.figolabs.figochat.details"
 
-    private fun prefs() = FigoChatInitProvider.appContext?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-
-    private fun key(assistantId: String) = "details.$assistantId"
-
-    override fun read(assistantId: String): FigoCustomerDetails? = try {
-        prefs()?.getString(key(assistantId), null)?.let { raw ->
-            val json = JSONObject(raw)
-            FigoCustomerDetails(
-                fullName = json.optString("fullName", ""),
-                emailAddress = json.optString("emailAddress", ""),
-                mobilePhone = json.optString("mobilePhone", ""),
-            ).takeUnless { it.isEmpty }
-        }
-    } catch (_: Exception) {
-        null // corrupt or unavailable
-    }
-
-    override fun save(assistantId: String, details: FigoCustomerDetails) {
+    fun delete() {
         try {
-            val json = JSONObject()
-                .put("fullName", details.fullName)
-                .put("emailAddress", details.emailAddress)
-                .put("mobilePhone", details.mobilePhone)
-            prefs()?.edit()?.putString(key(assistantId), json.toString())?.apply()
-        } catch (_: Exception) {
-            // storage unavailable
-        }
-    }
-
-    override fun forget(assistantId: String) {
-        try {
-            prefs()?.edit()?.remove(key(assistantId))?.apply()
+            val context = FigoChatInitProvider.appContext ?: return
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().commit()
+            context.deleteSharedPreferences(PREFS)
         } catch (_: Exception) {
             // storage unavailable
         }
@@ -72,7 +38,7 @@ internal object SharedPreferencesDetailsStore : FigoDetailsStore {
 
 /**
  * Captures the application context when the app starts, so [FigoChat.initialize] (which takes no context) can
- * remember the details form. Declared in the library manifest; does nothing else.
+ * delete details stored by older versions. Declared in the library manifest; does nothing else.
  */
 class FigoChatInitProvider : ContentProvider() {
     override fun onCreate(): Boolean {

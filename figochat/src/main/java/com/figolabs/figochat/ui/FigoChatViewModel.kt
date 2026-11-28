@@ -82,7 +82,7 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
     internal var detailsErrorField by mutableStateOf<FigoDetailsField?>(null)
         private set
 
-    /** Validates the form; on success the details are remembered and the chat starts. */
+    /** Validates the form; on success the details are kept for the conversation session and the chat starts. */
     internal fun submitDetails() {
         if (!canSubmitDetails) return
         val result = validateCustomerDetails(detailsName, detailsEmail, detailsCountry, detailsPhone)
@@ -122,15 +122,16 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
     internal val waitingMessage: String? get() = assistant?.waitingMessage?.trim()?.takeIf { it.isNotEmpty() }
 
     /**
-     * What the screen shows, oldest first: the intro message, the firstCustomerMessage exchange, then the messages
-     * sent from this screen.
+     * What the screen shows, oldest first: the intro message, the firstCustomerMessage exchange (unless restored
+     * history holds it), then the restored history and the messages sent from this screen.
      */
     internal val displayMessages: List<FigoChatMessage>
         get() = buildList {
             assistant?.introMessage?.trim()?.takeIf { it.isNotEmpty() }?.let {
                 add(FigoChatMessage(id = "intro", role = FigoMessageRole.ASSISTANT, text = it, createdAt = 0))
             }
-            first?.let { f ->
+            // restored history already holds the firstCustomerMessage exchange
+            first?.takeUnless { it.message.id == hiddenFirstId }?.let { f ->
                 add(f.message)
                 f.reply?.let(::add)
                 f.error?.let {
@@ -158,14 +159,70 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
     private var recordTimer: Job? = null
     private var noticeJob: Job? = null
 
+    /** The conversation this screen's messages belong to (see [FigoChat.conversation]). */
+    private var conversationSeen = FigoChat.conversation.value
+    /** History was fetched (or wasn't needed) for the current conversation. */
+    private var historyChecked = false
+    /** The firstCustomerMessage exchange hidden because the restored history holds it. */
+    private var hiddenFirstId by mutableStateOf<String?>(null)
+
     init {
+        // opening the chat ends a session that has been idle for an hour
+        if (FigoChat.isInitialized) FigoChat.expireSessionIfIdle()
+        conversationSeen = FigoChat.conversation.value
         syncSession()
         viewModelScope.launch {
-            // initialize / reset / logout start a new conversation: drop this screen's messages
-            FigoChat.conversation.drop(1).collect { messages.clear() }
+            // initialize / reset / logout / expiry start a new conversation: drop this screen's messages
+            FigoChat.conversation.drop(1).collect { if (it != conversationSeen) startNewConversation() }
         }
         viewModelScope.launch {
             FigoChat.version.drop(1).collect { syncSession() }
+        }
+    }
+
+    private fun startNewConversation() {
+        conversationSeen = FigoChat.conversation.value
+        messages.clear()
+        hiddenFirstId = null
+        historyChecked = false
+        syncSession()
+    }
+
+    /**
+     * Ends the session if it has been idle for an hour (see [FigoChat.expireSessionIfIdle]) and drops this screen's
+     * messages right away. Returns true when it ended.
+     */
+    private fun expireIfIdle(): Boolean {
+        if (!FigoChat.expireSessionIfIdle()) return false
+        startNewConversation()
+        return true
+    }
+
+    /**
+     * Shows the messages of a conversation resumed when the screen opens (one from this app run, or the `threadId`
+     * passed to initialize) when this screen has none. Waits for the firstCustomerMessage reply, which the history
+     * then holds. A failure only means no history is shown.
+     */
+    private fun restoreHistory() {
+        if (historyChecked || !FigoChat.isInitialized || needsDetails) return
+        if (messages.isNotEmpty()) {
+            historyChecked = true
+            return
+        }
+        val threadId = FigoChat.threadId ?: return
+        if (first?.done == false) return
+        historyChecked = true
+        val conversation = conversationSeen
+        viewModelScope.launch {
+            val history = try {
+                FigoChat.client.getMessages(threadId)
+            } catch (e: Exception) {
+                report(e)
+                return@launch
+            }
+            if (history.isEmpty() || conversation != conversationSeen || FigoChat.threadId != threadId) return@launch
+            hiddenFirstId = first?.message?.id
+            messages.addAll(0, history)
         }
     }
 
@@ -185,6 +242,7 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
         assistant = FigoChat.assistantInfo
         first = FigoChat.firstExchange
         syncRealtime()
+        restoreHistory()
     }
 
     private fun report(e: Throwable): FigoChatException {
@@ -222,6 +280,7 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
             onMessage = { html ->
                 viewModelScope.launch {
                     messages += FigoChatMessage(id = newId(), role = FigoMessageRole.ASSISTANT, text = html)
+                    FigoChat.recordActivity()
                     FigoChat.emitMessageReceived(htmlToText(html))
                 }
             },
@@ -245,6 +304,7 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
                 val question = message.text.ifEmpty { filesQuestion(message.attachments.size) }
                 val reply = FigoChat.client.sendMessage(question, message.attachments.map { it.url })
                 replace(message.id) { it.copy(status = FigoMessageStatus.SENT) }
+                FigoChat.recordActivity()
                 FigoChat.emitMessageSent(message.text)
                 // in live agent mode the API relays the message to the agent and answers with nothing;
                 // the agent's reply arrives on the thread channel instead
@@ -271,6 +331,9 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
         val text = (textOverride ?: input).trim()
         val ready = pending.filter { !it.uploading && !it.failed && it.url != null }
         if (waiting || (text.isEmpty() && ready.isEmpty())) return
+        // an hour since the last message: start a new conversation (an anonymous visitor fills in the form first;
+        // what they typed stays in the input)
+        if (expireIfIdle() && needsDetails) return
         if (pending.any { it.uploading }) {
             showNotice("Please wait, your files are still uploading.")
             return
@@ -293,6 +356,8 @@ class FigoChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun retry(message: FigoChatMessage) {
         if (waiting) return
+        // the session ended: the failed message belonged to the old conversation, which is gone
+        if (expireIfIdle()) return
         if (message.id == first?.message?.id) {
             FigoChat.retryFirstMessage()
             return

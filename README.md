@@ -22,7 +22,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.figoailabs:figochat-android:2.3.0")
+    implementation("com.github.figoailabs:figochat-android:2.4.0")
 }
 ```
 
@@ -49,7 +49,7 @@ The header title, welcome message and waiting message come from the chatbot's se
 
 Java apps can call `FigoChat.initialize(...)` the same way. The optional parameters have overloads.
 
-**Users you don't know:** leave `fullName`, `emailAddress` and `mobilePhone` out and the chat asks for them with a short form (name, email, phone with a searchable country-code picker) that the user can skip. Submitted details are used as if passed to `initialize` and remembered on the device (SharedPreferences); `logout` forgets them. Set `askForDetails: false` to skip the form, `defaultCountry` to preselect a country in the phone field (an ISO code such as `GB`; when it's unset or unknown, Nigeria (`NG`) is preselected), and call `setCustomerDetails` when the user signs in later. When the company has both a terms and conditions link and a privacy policy link, the form shows an "I have read and agreed to the Terms, conditions, and privacy policy" checkbox, and **Start chat** stays disabled until it's ticked (**Skip** still works).
+**Users you don't know:** leave `fullName`, `emailAddress` and `mobilePhone` out and the chat asks for them with a short form (name, email, phone with a searchable country-code picker) that the user can skip. Submitted details are used as if passed to `initialize` and kept in memory only, for the conversation session (see 2.4.0 below); nothing is saved on the device, and `logout` forgets them. Set `askForDetails: false` to skip the form, `defaultCountry` to preselect a country in the phone field (an ISO code such as `GB`; when it's unset or unknown, Nigeria (`NG`) is preselected), and call `setCustomerDetails` when the user signs in later. When the company has both a terms and conditions link and a privacy policy link, the form shows an "I have read and agreed to the Terms, conditions, and privacy policy" checkbox, and **Start chat** stays disabled until it's ticked (**Skip** still works).
 
 ## Show the chat
 
@@ -74,6 +74,7 @@ FigoChat.logout()             // clear settings on sign-out
 val reply = FigoChat.client.sendMessage("Hello")
 val text = FigoChat.client.transcribe(audioFile)
 val urls = FigoChat.client.uploadFiles(listOf(FigoUploadFile("receipt.jpg", bytes, "image/jpeg")))
+val history = FigoChat.client.getMessages()   // the current thread's messages, oldest first ([] when none)
 ```
 
 ### Events
@@ -94,6 +95,14 @@ Both are called on the main thread. Listeners can be added before `initialize` a
 Assistant replies arrive as HTML. The chat renders them natively as formatted text (bold, italics, underline, headings, lists, line breaks, tappable links), so users never see tags or markdown symbols. For your own UI, `htmlToRuns(html)` returns the same styled runs and `htmlToText(html)` returns plain text.
 
 Errors are `FigoChatException` with a `code` (`401`, `49`, `TIMEOUT`, `NETWORK`, …). The chat screen never shows these technical messages to users. It shows friendly text instead, such as "Chat isn't available right now. Please try again later." for a bad key, no credits or a plan limit, and "You seem to be offline…" for network problems. `onError` still receives the full technical error for your logs. Apps with their own UI can use `friendlyMessage(error)`.
+
+## 2.4.0
+
+A phone or tablet may be shared, so the chat now behaves like a browser tab.
+
+- **One-hour conversation session:** the conversation's thread and the details typed into the "Personalize your chat" form make up a session that lasts one hour from the last activity (a message the user sent, or a reply or live agent message that arrived). Calling `initialize` again in the same app run, for the same assistant and the same details passed by the app, continues it. After an hour without activity, the next `initialize`, opening the chat or sending a message starts a new conversation: the thread is reset, the form details and a skipped form are forgotten, and an anonymous visitor sees the details form again (unless `askForDetails` is `false`). Details your app passes to `initialize` or `setCustomerDetails` are kept.
+- **Details kept only for the app's run:** form details live in memory and are gone when the app process ends. They're no longer saved in SharedPreferences, and details saved there by earlier versions are deleted on `initialize`.
+- **Restored history:** when the chat opens on an active conversation (one from this app run, or a `threadId` passed to `initialize`), its earlier messages are loaded from `GET /api/v1/chat/messages/{assistantId}/{threadId}` and shown below the welcome message: the user's on the right, the assistant's and live agent's on the left, formatted like any reply. A `firstCustomerMessage` exchange that the history already holds isn't shown twice. If loading fails, the chat works as before. Apps with their own UI can call `FigoChat.client.getMessages(threadId)`.
 
 ## 2.3.0
 

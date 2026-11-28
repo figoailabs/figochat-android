@@ -4,6 +4,7 @@ import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -31,6 +32,8 @@ class FigoChatSessionTest {
         val assistant: JSONObject = defaultAssistant,
         val answer: String = "<p>Your balance is <b>₦500</b></p>",
         val fail: Boolean = false,
+        /** Response to GET /api/v1/chat/messages/...; null answers 404. */
+        val history: JSONArray? = null,
     ) : Dispatcher() {
         val gate = CountDownLatch(1)
         val requests = CopyOnWriteArrayList<Pair<RecordedRequest, String>>()
@@ -41,6 +44,9 @@ class FigoChatSessionTest {
             val path = request.path.orEmpty()
             return when {
                 path == "/api/v1/sdk/assistant/asst-1" -> json(JSONObject().put("responseCode", "00").put("responseData", assistant))
+                path.startsWith("/api/v1/chat/messages/") ->
+                    if (history == null) MockResponse().setResponseCode(404).setBody("\"Not found\"")
+                    else json(JSONObject().put("responseCode", "00").put("responseMessage", "Successful").put("responseData", history))
                 path.startsWith("/api/v1/chat/assistant/") ->
                     if (fail) MockResponse().setResponseCode(401).setBody("\"Invalid api-key was passed\"")
                     else json(JSONObject().put("responseCode", "00").put("responseData", answer))
@@ -56,23 +62,21 @@ class FigoChatSessionTest {
     private val server = MockWebServer()
     private lateinit var api: FakeApi
     private val originalDispatch = FigoChat.dispatchToMain
-    private val originalStore = FigoChat.detailsStore
+    private val originalLegacy = FigoChat.deleteLegacyDetails
+    private val originalClock = FigoChat.clock
 
-    /** Stands in for SharedPreferences. */
-    private class MemoryStore : FigoDetailsStore {
-        val saved = java.util.concurrent.ConcurrentHashMap<String, FigoCustomerDetails>()
-        override fun read(assistantId: String) = saved[assistantId]
-        override fun save(assistantId: String, details: FigoCustomerDetails) { saved[assistantId] = details }
-        override fun forget(assistantId: String) { saved.remove(assistantId) }
-    }
-    private lateinit var store: MemoryStore
+    /** Times the details older versions stored on the device were deleted. */
+    private val legacyDeletes = java.util.concurrent.atomic.AtomicInteger()
+
+    /** The fake clock used for session expiry. */
+    @Volatile private var now = 1_700_000_000_000L
 
     @Before
     fun setUp() {
         // no main looper in JVM tests: run listener callbacks right away
         FigoChat.dispatchToMain = { it.run() }
-        store = MemoryStore()
-        FigoChat.detailsStore = store
+        FigoChat.deleteLegacyDetails = { legacyDeletes.incrementAndGet() }
+        FigoChat.clock = { now }
         server.start()
         useApi(FakeApi())
     }
@@ -82,7 +86,8 @@ class FigoChatSessionTest {
         api.gate.countDown()
         FigoChat.logout()
         FigoChat.dispatchToMain = originalDispatch
-        FigoChat.detailsStore = originalStore
+        FigoChat.deleteLegacyDetails = originalLegacy
+        FigoChat.clock = originalClock
         server.shutdown()
     }
 
@@ -316,18 +321,39 @@ class FigoChatSessionTest {
         assertEquals("Ada Lovelace", body.getString("fullName"))
         assertEquals("ada@example.com", body.getString("emailAddress"))
         assertEquals("+447700900123", body.getString("phoneNumber"))
-        assertEquals(expected, store.saved["asst-1"])
     }
 
     @Test
-    fun aReturningVisitorIsNotAskedAgainAndLogoutForgetsTheirDetails() {
-        store.saved["asst-1"] = FigoCustomerDetails("Ada Lovelace", "ada@example.com", "+447700900123")
+    fun formDetailsAreKeptInMemoryForTheSessionNotOnTheDeviceAndLogoutForgetsThem() {
+        api.gate.countDown()
+        initializeAnonymous()
+        assertTrue(FigoChat.needsDetails)
+        // what older versions stored on the device is deleted on initialize
+        eventually("legacy details deleted") { legacyDeletes.get() > 0 }
+
+        val details = FigoCustomerDetails("Ada Lovelace", "ada@example.com", "+447700900123")
+        FigoChat.submitDetails(details)
+
+        // the chat opened again later in the same app run: not asked again
         initializeAnonymous()
         assertFalse(FigoChat.needsDetails)
-        assertEquals("ada@example.com", FigoChat.customerDetails.emailAddress)
+        assertEquals(details, FigoChat.customerDetails)
         assertEquals("ada@example.com", FigoChat.config.emailAddress)
+
+        // nothing but the in-memory session holds them: no storage seam exists any more, and logout forgets them
         FigoChat.logout()
-        assertNull(store.saved["asst-1"])
+        initializeAnonymous()
+        assertTrue(FigoChat.needsDetails)
+        assertEquals(FigoCustomerDetails(), FigoChat.customerDetails)
+    }
+
+    @Test
+    fun theOldDetailsPrefsAreClearedAndErrorsAreIgnored() {
+        FigoChat.deleteLegacyDetails = { legacyDeletes.incrementAndGet(); throw IllegalStateException("no storage") }
+        initializeAnonymous()
+        eventually("legacy details deleted") { legacyDeletes.get() > 0 }
+        assertTrue(FigoChat.isInitialized)
+        assertTrue(FigoChat.needsDetails)
     }
 
     @Test
@@ -343,7 +369,6 @@ class FigoChatSessionTest {
         assertEquals("", body.getString("fullName"))
         assertEquals("", body.getString("emailAddress"))
         assertEquals("", body.getString("phoneNumber"))
-        assertNull(store.saved["asst-1"])
 
         initializeAnonymous() // e.g. the chat opened again later in the same app run
         assertFalse(FigoChat.needsDetails)
@@ -374,5 +399,151 @@ class FigoChatSessionTest {
         assertTrue(FigoCountries.search("nigeria").any { it.code == "NG" })
         assertEquals("", FigoCountries.internationalNumber(FigoCountries.byCode("NG")!!, "0"))
         assertEquals("+2348012345678", FigoCountries.internationalNumber(FigoCountries.byCode("NG")!!, "0801-234-5678"))
+    }
+
+    // ---------- conversation session (1 hour) and history ----------
+
+    private fun history() = JSONArray()
+        .put(JSONObject().put("role", "user").put("message", "Where is my order?").put("isLiveAgent", false).put("dateCreated", "2026-11-28T10:00:00.1234567Z"))
+        .put(JSONObject().put("role", "assistant").put("message", "<p>It ships <b>today</b></p>").put("isLiveAgent", false).put("dateCreated", "2026-11-28T10:00:05"))
+        .put(JSONObject().put("role", "assistant").put("message", "Hi, this is Sam").put("isLiveAgent", true).put("dateCreated", "2026-11-28T11:00:00+01:00"))
+        .put(JSONObject().put("role", "system").put("message", "ignored"))
+        .put(JSONObject().put("role", "user").put("message", JSONObject.NULL).put("dateCreated", "x"))
+
+    @Test
+    fun getMessagesParsesTheHistoryOldestFirst() {
+        useApi(FakeApi(history = history()).also { it.gate.countDown() })
+        FigoChat.initialize(apiKey = "k", assistantId = "asst-1", primaryColor = "#F97316", baseUrl = server.url("/").toString(), threadId = "thread-7")
+        val messages = kotlinx.coroutines.runBlocking { FigoChat.client.getMessages() }
+
+        assertEquals(listOf(FigoMessageRole.USER, FigoMessageRole.ASSISTANT, FigoMessageRole.ASSISTANT), messages.map { it.role })
+        assertEquals(listOf("Where is my order?", "<p>It ships <b>today</b></p>", "Hi, this is Sam"), messages.map { it.text })
+        assertTrue(messages.all { it.status == FigoMessageStatus.SENT })
+        assertEquals(messages.size, messages.map { it.id }.toSet().size)
+        assertEquals(java.time.Instant.parse("2026-11-28T10:00:00.123Z").toEpochMilli(), messages[0].createdAt)
+        assertEquals(java.time.Instant.parse("2026-11-28T10:00:05Z").toEpochMilli(), messages[1].createdAt)
+        assertEquals(java.time.Instant.parse("2026-11-28T10:00:00Z").toEpochMilli(), messages[2].createdAt)
+
+        val request = api.requests.map { it.first }.first { it.path.orEmpty().startsWith("/api/v1/chat/messages/") }
+        assertEquals("GET", request.method)
+        assertEquals("/api/v1/chat/messages/asst-1/thread-7", request.path)
+        assertEquals("Bearer k", request.getHeader("Authorization"))
+    }
+
+    @Test
+    fun serverDatesAreParsedLeniently() {
+        fun at(iso: String) = java.time.Instant.parse(iso).toEpochMilli()
+        assertEquals(at("2026-11-28T10:00:00Z"), FigoChatClient.parseServerDate("2026-11-28T10:00:00Z"))
+        assertEquals(at("2026-11-28T10:00:00.120Z"), FigoChatClient.parseServerDate(" 2026-11-28 10:00:00.12 "))
+        assertEquals(at("2026-11-28T08:30:00Z"), FigoChatClient.parseServerDate("2026-11-28T10:30:00+0200"))
+        assertEquals(at("2026-11-28T00:00:00Z"), FigoChatClient.parseServerDate("2026-11-28"))
+        assertNull(FigoChatClient.parseServerDate("yesterday"))
+        assertNull(FigoChatClient.parseServerDate(""))
+        assertNull(FigoChatClient.parseServerDate(null))
+    }
+
+    @Test
+    fun getMessagesGivesAnEmptyListFor404AndThrowsForOtherFailures() {
+        api.gate.countDown()
+        initialize()
+        assertTrue(kotlinx.coroutines.runBlocking { FigoChat.client.getMessages("unknown") }.isEmpty())
+        // no thread yet: nothing to ask for
+        assertTrue(kotlinx.coroutines.runBlocking { FigoChat.client.getMessages() }.isEmpty())
+
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = MockResponse().setResponseCode(500).setBody("\"Server error\"")
+        }
+        val error = try {
+            kotlinx.coroutines.runBlocking { FigoChat.client.getMessages("thread-7") }
+            null
+        } catch (e: FigoChatException) {
+            e
+        }
+        assertEquals("500", error?.code)
+    }
+
+    @Test
+    fun anHourWithoutActivityEndsTheSessionClearsThreadAndDetailsAndAsksAgain() {
+        api.gate.countDown()
+        initializeAnonymous(firstCustomerMessage = "Hi")
+        FigoChat.submitDetails(FigoCustomerDetails("Ada Lovelace", "ada@example.com", "+447700900123"))
+        eventually("first exchange") { FigoChat.firstExchange?.done == true }
+        assertEquals("thread-42", FigoChat.threadId)
+        val conversation = FigoChat.conversation.value
+
+        now += FigoChat.SESSION_TIMEOUT_MILLIS - 1
+        assertFalse(FigoChat.expireSessionIfIdle())
+        assertEquals("thread-42", FigoChat.threadId)
+
+        now += 1
+        assertTrue(FigoChat.expireSessionIfIdle())
+        assertNull(FigoChat.threadId)
+        assertNull(FigoChat.firstExchange)
+        assertTrue(FigoChat.needsDetails)
+        assertEquals(FigoCustomerDetails(), FigoChat.customerDetails)
+        assertTrue("the chat screen clears its messages", FigoChat.conversation.value > conversation)
+        assertFalse("checked once", FigoChat.expireSessionIfIdle())
+
+        // a new initialize after the hour doesn't resume either; the skipped flag is forgotten too
+        FigoChat.skipDetails()
+        assertFalse(FigoChat.needsDetails)
+        now += FigoChat.SESSION_TIMEOUT_MILLIS
+        initializeAnonymous()
+        assertTrue(FigoChat.needsDetails)
+        assertNull(FigoChat.threadId)
+    }
+
+    @Test
+    fun expiryKeepsDetailsTheAppPassedAndDoesNotAskForTheForm() {
+        api.gate.countDown()
+        initialize(firstCustomerMessage = "Hi")
+        eventually("first exchange") { FigoChat.firstExchange?.done == true }
+        now += FigoChat.SESSION_TIMEOUT_MILLIS
+        assertTrue(FigoChat.expireSessionIfIdle())
+        assertNull(FigoChat.threadId)
+        assertFalse(FigoChat.needsDetails)
+        assertEquals(FigoCustomerDetails("Ada", "a@b.c", "+1"), FigoChat.customerDetails)
+
+        // askForDetails = false: no form after expiry either
+        FigoChat.logout()
+        initializeAnonymous(askForDetails = false, firstCustomerMessage = "Hi")
+        eventually("first exchange") { FigoChat.firstExchange?.done == true }
+        now += FigoChat.SESSION_TIMEOUT_MILLIS
+        assertTrue(FigoChat.expireSessionIfIdle())
+        assertFalse(FigoChat.needsDetails)
+    }
+
+    @Test
+    fun activityRefreshesTheHourAndTheSessionIsResumedByInitialize() {
+        api.gate.countDown()
+        initializeAnonymous()
+        FigoChat.submitDetails(FigoCustomerDetails("Ada Lovelace", "ada@example.com", "+447700900123"))
+        kotlinx.coroutines.runBlocking { FigoChat.client.sendMessage("Hello") }
+        FigoChat.recordActivity() // what the chat screen does after a reply
+        assertEquals("thread-42", FigoChat.threadId)
+
+        now += FigoChat.SESSION_TIMEOUT_MILLIS - 1000
+        FigoChat.recordActivity() // e.g. a live agent message
+        now += FigoChat.SESSION_TIMEOUT_MILLIS - 1000
+        assertFalse(FigoChat.expireSessionIfIdle())
+
+        // initialize again in the same app run, within the hour: same thread, same details, no form
+        initializeAnonymous()
+        assertEquals("thread-42", FigoChat.threadId)
+        assertFalse(FigoChat.needsDetails)
+        assertEquals("ada@example.com", FigoChat.customerDetails.emailAddress)
+
+        // other app-passed details start a new session
+        initialize()
+        assertNull(FigoChat.threadId)
+
+        // a threadId the app passes starts the hour now
+        FigoChat.initialize(apiKey = "k", assistantId = "asst-1", primaryColor = "#F97316", baseUrl = server.url("/").toString(), threadId = "thread-9")
+        assertEquals("thread-9", FigoChat.threadId)
+        now += FigoChat.SESSION_TIMEOUT_MILLIS - 1
+        assertFalse(FigoChat.expireSessionIfIdle())
+        now += 1
+        assertTrue(FigoChat.expireSessionIfIdle())
+        assertNull(FigoChat.threadId)
     }
 }

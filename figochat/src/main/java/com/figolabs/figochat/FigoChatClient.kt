@@ -27,6 +27,7 @@ import java.util.concurrent.TimeUnit
  *  - POST /api/v1/cdn/upload/ocr/{assistantId}   upload files to the CDN (images are OCR'd)
  *  - GET  /api/v1/realtime/config                public Pusher settings for live agent messages
  *  - GET  /api/v1/sdk/assistant/{assistantId}    the assistant's name, persona, waiting and intro messages
+ *  - GET  /api/v1/chat/messages/{assistantId}/{threadId}   the messages of a conversation, oldest first
  */
 class FigoChatClient internal constructor(config: FigoChatConfig) {
 
@@ -56,6 +57,13 @@ class FigoChatClient internal constructor(config: FigoChatConfig) {
     /** Forget the current thread so the next message starts a new conversation. */
     fun resetThread() {
         threadId = null
+        threadMode = null
+    }
+
+    /** Continues [id] (null: none) on the next message; used when a conversation session is resumed. */
+    internal fun useThread(id: String?) {
+        if (id == threadId) return
+        threadId = id
         threadMode = null
     }
 
@@ -141,6 +149,36 @@ class FigoChatClient internal constructor(config: FigoChatConfig) {
         }
     }
 
+    /**
+     * The messages of a conversation, oldest first: the user's on the right ([FigoMessageRole.USER]) and the assistant's
+     * or live agent's ([FigoMessageRole.ASSISTANT], HTML) on the left. An unknown thread, one that isn't this assistant's
+     * or one with no messages gives an empty list; other failures throw [FigoChatException].
+     */
+    suspend fun getMessages(threadId: String? = this.threadId): List<FigoChatMessage> = withContext(Dispatchers.IO) {
+        val id = threadId?.trim()?.takeIf { it.isNotEmpty() } ?: return@withContext emptyList()
+        execute(request(url("api", "v1", "chat", "messages", config.assistantId, id)).get().build()) { res ->
+            if (res.code == 404) return@execute emptyList()
+            val data = parse(res).optJSONArray("responseData") ?: return@execute emptyList()
+            (0 until data.length()).mapNotNull { i ->
+                val item = data.optJSONObject(i) ?: return@mapNotNull null
+                val role = when (item.optString("role").trim().lowercase()) {
+                    "user" -> FigoMessageRole.USER
+                    "assistant" -> FigoMessageRole.ASSISTANT
+                    else -> return@mapNotNull null
+                }
+                val text = if (item.isNull("message")) "" else item.optString("message", "")
+                if (text.isBlank()) return@mapNotNull null
+                FigoChatMessage(
+                    id = FigoChat.newMessageId(),
+                    role = role,
+                    text = text,
+                    createdAt = parseServerDate(if (item.isNull("dateCreated")) null else item.optString("dateCreated")) ?: System.currentTimeMillis(),
+                    status = FigoMessageStatus.SENT,
+                )
+            }
+        }
+    }
+
     /** Public Pusher settings used to subscribe to the thread channel for live agent messages. */
     suspend fun getRealtimeConfig(): FigoRealtimeConfig = withContext(Dispatchers.IO) {
         execute(request(url("api", "v1", "realtime", "config")).get().build()) { res ->
@@ -200,11 +238,36 @@ class FigoChatClient internal constructor(config: FigoChatConfig) {
         return json
     }
 
-    private companion object {
+    internal companion object {
         val JSON = "application/json; charset=utf-8".toMediaType()
         const val CODE_SUCCESS = "00"
         const val CODE_LIMIT_REACHED = "49"
         const val HEADER_THREAD_ID = "X-Thread-Id"
         const val HEADER_THREAD_MODE = "X-Thread-Mode"
+
+        private val OFFSET_WITHOUT_COLON = Regex("""([+-]\d{2})(\d{2})$""")
+
+        /**
+         * Epoch millis of an ISO-8601 date from the API, leniently: with or without a fraction (any number of digits),
+         * a `Z` or `+hh:mm` / `+hhmm` offset (none means UTC), a space instead of `T`, or a date alone. null if unreadable.
+         */
+        fun parseServerDate(value: String?): Long? {
+            var v = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            v = v.replace(' ', 'T')
+            if (v.length > 10) v = OFFSET_WITHOUT_COLON.replace(v) { "${it.groupValues[1]}:${it.groupValues[2]}" }
+            return try {
+                java.time.OffsetDateTime.parse(v).toInstant().toEpochMilli()
+            } catch (_: Exception) {
+                try {
+                    java.time.LocalDateTime.parse(v).toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
+                } catch (_: Exception) {
+                    try {
+                        java.time.LocalDate.parse(v).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+            }
+        }
     }
 }

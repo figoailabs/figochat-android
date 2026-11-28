@@ -46,12 +46,33 @@ internal data class FigoFirstExchange(
  */
 object FigoChat {
 
+    /**
+     * A conversation session, kept in memory only (like a browser tab): the thread and the details typed into the
+     * details form, for one assistant. It ends [SESSION_TIMEOUT_MILLIS] after the last activity, on [logout], and
+     * when the app process ends.
+     */
+    private class Conversation(
+        /** The details the app passed to [initialize]; a session is resumed only for the same ones. */
+        val owner: FigoCustomerDetails,
+    ) {
+        @Volatile var threadId: String? = null
+        /** Details typed into the details form; null when none were. */
+        @Volatile var formDetails: FigoCustomerDetails? = null
+        /** The visitor skipped the details form. */
+        @Volatile var skipped: Boolean = false
+        /** When the user last sent a message or a reply / live agent message arrived; null before that. */
+        @Volatile var lastActivity: Long? = null
+    }
+
     private class Session(
         @Volatile var config: FigoChatConfig,
         val client: FigoChatClient,
         val realtime: FigoRealtimeConfigStore,
         /** true while the chat should ask for the customer's name, email and phone (all were empty). */
         @Volatile var needsDetails: Boolean,
+        val conversation: Conversation,
+        /** Details from the app ([initialize] or [setCustomerDetails]), not from the form; kept when the session expires. */
+        @Volatile var appDetails: FigoCustomerDetails,
     ) {
         /** Display details from GET /api/v1/sdk/assistant/{id}; null until loaded (or if loading failed). */
         @Volatile var assistant: FigoAssistantInfo? = null
@@ -60,11 +81,21 @@ object FigoChat {
         @Volatile var pendingFirst: String? = null
     }
 
-    /** Where details typed into the form are remembered. A seam for JVM unit tests. */
-    internal var detailsStore: FigoDetailsStore = SharedPreferencesDetailsStore
+    /** A conversation session ends this long after the last activity. */
+    internal const val SESSION_TIMEOUT_MILLIS: Long = 60 * 60 * 1000L
 
-    /** Assistants whose details form the visitor skipped during this app run. */
-    private val skippedDetails: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    /** The time used for session expiry. A seam for JVM unit tests. */
+    internal var clock: () -> Long = { System.currentTimeMillis() }
+
+    /** Deletes the details older versions kept in SharedPreferences. A seam for JVM unit tests. */
+    internal var deleteLegacyDetails: () -> Unit = { LegacyDetailsStore.delete() }
+
+    /** Conversation sessions of this app run, by assistant id. Memory only. */
+    private val conversations = java.util.concurrent.ConcurrentHashMap<String, Conversation>()
+
+    /** true when a session whose last activity was at [lastActivity] has ended at [now]. */
+    internal fun isSessionExpired(lastActivity: Long?, now: Long): Boolean =
+        lastActivity != null && now - lastActivity >= SESSION_TIMEOUT_MILLIS
 
     @Volatile private var session: Session? = null
     private val _version = MutableStateFlow(0)
@@ -145,17 +176,40 @@ object FigoChat {
             defaultCountry = defaultCountry?.trim()?.takeIf { it.isNotEmpty() },
         )
 
-        // anonymous visitor: reuse details they gave before, or ask for them (unless they skipped during this app run)
+        // details typed into the form are no longer stored on the device: delete what older versions kept
+        backgroundScope.launch {
+            try {
+                deleteLegacyDetails()
+            } catch (_: Exception) {
+                // nothing to delete, or storage unavailable
+            }
+        }
+
+        // resume this app run's conversation session for the assistant, unless it expired or the app passes other details
+        val appDetails = FigoCustomerDetails(config.fullName, config.emailAddress, config.mobilePhone)
+        val now = clock()
+        val conversation = conversations[config.assistantId]
+            ?.takeIf { it.owner == appDetails && !isSessionExpired(it.lastActivity, now) }
+            ?: Conversation(appDetails).also { conversations[config.assistantId] = it }
+        config.threadId?.trim()?.takeIf { it.isNotEmpty() }?.let { passed ->
+            if (conversation.threadId != passed) {
+                conversation.threadId = passed
+                conversation.lastActivity = now // a thread the app resumes starts the hour now
+            }
+        }
+
+        // anonymous visitor: reuse details they gave in this session, or ask for them (unless they skipped)
         var needsDetails = false
-        if (askForDetails && config.fullName.isEmpty() && config.emailAddress.isEmpty() && config.mobilePhone.isEmpty()) {
-            val saved = detailsStore.read(config.assistantId)
-            if (saved != null) config = config.copy(fullName = saved.fullName, emailAddress = saved.emailAddress, mobilePhone = saved.mobilePhone)
-            else needsDetails = config.assistantId !in skippedDetails
+        if (askForDetails && appDetails.isEmpty) {
+            val given = conversation.formDetails
+            if (given != null) config = config.copy(fullName = given.fullName, emailAddress = given.emailAddress, mobilePhone = given.mobilePhone)
+            else needsDetails = !conversation.skipped
         }
 
         val client = FigoChatClient(config)
+        client.useThread(conversation.threadId)
         // realtime settings are fetched on first use and kept encrypted with a per-session key
-        val s = Session(config, client, FigoRealtimeConfigStore(client, FigoCrypto()), needsDetails)
+        val s = Session(config, client, FigoRealtimeConfigStore(client, FigoCrypto()), needsDetails, conversation, appDetails)
         session = s
         loadAssistant(s)
         val first = firstCustomerMessage?.trim()?.takeIf { it.isNotEmpty() }
@@ -174,14 +228,20 @@ object FigoChat {
     fun setCustomerDetails(fullName: String? = null, emailAddress: String? = null, mobilePhone: String? = null) {
         val s = requireSession()
         val c = s.config
-        val updated = c.copy(
+        val details = FigoCustomerDetails(
             fullName = (fullName ?: c.fullName).trim(),
             emailAddress = (emailAddress ?: c.emailAddress).trim(),
             mobilePhone = (mobilePhone ?: c.mobilePhone).trim(),
         )
+        s.appDetails = details
+        useDetails(s, details)
+        continueAfterDetails(s)
+    }
+
+    private fun useDetails(s: Session, details: FigoCustomerDetails) {
+        val updated = s.config.copy(fullName = details.fullName, emailAddress = details.emailAddress, mobilePhone = details.mobilePhone)
         s.config = updated
         s.client.updateConfig(updated)
-        continueAfterDetails(s)
     }
 
     /** The customer's current name, email and phone (empty strings when unknown). */
@@ -192,18 +252,59 @@ object FigoChat {
     /** true while the chat screen shows the details form instead of the conversation. */
     internal val needsDetails: Boolean get() = session?.needsDetails == true
 
-    /** The details form was submitted: remember the details on this device, then chat with them. */
+    /**
+     * The details form was submitted: chat with the details and keep them, in memory only, for this conversation
+     * session. Submitting starts the session's hour.
+     */
     internal fun submitDetails(details: FigoCustomerDetails) {
         val s = requireSession()
-        detailsStore.save(s.config.assistantId, details)
-        setCustomerDetails(details.fullName, details.emailAddress, details.mobilePhone)
+        val c = s.conversation
+        c.formDetails = FigoCustomerDetails(details.fullName.trim(), details.emailAddress.trim(), details.mobilePhone.trim())
+        c.skipped = false
+        c.lastActivity = clock()
+        useDetails(s, c.formDetails!!)
+        continueAfterDetails(s)
     }
 
-    /** The visitor skipped the details form: chat without details and don't ask again during this app run. */
+    /** The visitor skipped the details form: chat without details and don't ask again during this conversation session. */
     internal fun skipDetails() {
         val s = session ?: return
-        skippedDetails += s.config.assistantId
+        s.conversation.skipped = true
+        s.conversation.lastActivity = clock()
         continueAfterDetails(s)
+    }
+
+    /**
+     * Records activity (the user sent a message, or a reply or live agent message arrived): the session now lasts
+     * until an hour from now. Also keeps the session's thread id in step with the client's.
+     */
+    internal fun recordActivity() {
+        val s = session ?: return
+        s.conversation.threadId = s.client.threadId
+        s.conversation.lastActivity = clock()
+    }
+
+    /**
+     * Ends the conversation session if it has been idle for [SESSION_TIMEOUT_MILLIS]: the thread is reset, the details
+     * typed into the form and the "skipped" choice are forgotten, the first exchange is cleared, and an anonymous
+     * visitor is asked for their details again (unless `askForDetails` is false). Returns true when it ended.
+     * Checked on [initialize], when the chat screen opens and before a message is sent.
+     */
+    internal fun expireSessionIfIdle(): Boolean {
+        val s = session ?: return false
+        val c = s.conversation
+        if (!isSessionExpired(c.lastActivity, clock())) return false
+        c.threadId = null
+        c.formDetails = null
+        c.skipped = false
+        c.lastActivity = null
+        s.client.resetThread()
+        s.first = null
+        useDetails(s, s.appDetails)
+        s.needsDetails = s.config.askForDetails && s.appDetails.isEmpty
+        s.pendingFirst = null
+        newConversation()
+        return true
     }
 
     /** Leaves the details form: sends the held-back firstCustomerMessage and refreshes the chat. */
@@ -252,21 +353,19 @@ object FigoChat {
     fun resetConversation() {
         session?.let {
             it.client.resetThread()
+            it.conversation.threadId = null
             it.first = null
         }
         newConversation()
     }
 
     /**
-     * Clears the configuration, e.g. when the user signs out. Details a visitor typed into the details form are
-     * forgotten too.
+     * Clears the configuration, e.g. when the user signs out. The conversation session (thread and details typed into
+     * the details form) is forgotten too.
      */
     @JvmStatic
     fun logout() {
-        session?.config?.assistantId?.let {
-            detailsStore.forget(it)
-            skippedDetails -= it
-        }
+        session?.config?.assistantId?.let { conversations.remove(it) }
         session = null
         newConversation()
     }
@@ -338,6 +437,7 @@ object FigoChat {
         backgroundScope.launch {
             val done = try {
                 val reply = s.client.sendMessage(text)
+                if (session === s) recordActivity()
                 emitMessageSent(text)
                 val replyText = htmlToText(reply.answer)
                 val replyMessage = if (replyText.isEmpty()) null
